@@ -165,41 +165,8 @@ transfer: false
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Error in installing: \n{}", stderr).into());
         }
+        println!("Pod installed successfully.");
         Ok(())
-
-        // match host_handler::HostsFile::new() {
-        //     Ok(mut host_file) => {
-        //         let hostname = format!("{}.{}", self.container_name, constants::WEBSITE_DOMAIN);
-        //         match host_file.add_entry(
-        //             constants::SERVER_IP,
-        //             &[&hostname],
-        //             Some("Added by thumed_login"),
-        //         ) {
-        //             Ok(_) => {
-        //                 println!("Hostname {} added to hosts file.", hostname);
-        //                 Ok(())
-        //             }
-        //             Err(e) => {
-        //                 eprintln!(
-        //                     "Error adding hostname to hosts file: {}.\n
-        //                     You may need to add {} manually.",
-        //                     e, hostname
-        //                 );
-        //                 Ok(())
-        //             }
-        //         }
-        //     }
-        //     Err(e) => {
-        //         eprintln!(
-        //             "Error creating hosts file: {}. \n
-        //             You may need to manually add host:\n{} {}",
-        //             constants::SERVER_IP,
-        //             e,
-        //             self.container_name
-        //         );
-        //         Ok(())
-        //     }
-        // }
     }
 }
 
