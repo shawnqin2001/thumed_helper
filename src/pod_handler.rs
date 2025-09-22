@@ -1,7 +1,9 @@
+use crate::constants;
 use crate::environment;
-use crate::host_handler;
 use crate::utils;
+// use crate::host_handler;
 use std::env;
+use std::error::Error;
 use std::fs;
 use std::io;
 use std::io::Write;
@@ -38,7 +40,10 @@ impl PodConfig {
             }
         }
         let mut cpu = String::new();
-        println!("Please input the CPU limit (in cores, default: 32):");
+        println!(
+            "Please input the CPU limit (in cores, default: {}):",
+            constants::DEFAULT_CPU_CORES
+        );
         io::stdin()
             .read_line(&mut cpu)
             .expect("Failed to read line");
@@ -55,7 +60,10 @@ impl PodConfig {
         };
 
         let mut memory = String::new();
-        println!("Please input the memory limit (in GB, default: 50):");
+        println!(
+            "Please input the memory limit (in GB, default: {}):",
+            constants::DEFAULT_MEMORY_GB
+        );
         io::stdin()
             .read_line(&mut memory)
             .expect("Failed to read line");
@@ -76,11 +84,29 @@ impl PodConfig {
             memory,
         }
     }
+
+    // Create a new PodConfig with provided parameters
+    pub fn new_with_params(container_name: String, cpu: Option<u8>, memory: Option<u8>) -> Self {
+        // Validate container name
+        if !container_name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            || container_name.is_empty()
+        {
+            panic!("Invalid pod name: must contain only lowercase letters and numbers");
+        }
+
+        PodConfig {
+            container_name,
+            cpu,
+            memory,
+        }
+    }
     fn get_cpu(&self) -> u8 {
-        self.cpu.unwrap_or(32)
+        self.cpu.unwrap_or(constants::DEFAULT_CPU_CORES)
     }
     fn get_memory(&self) -> u8 {
-        self.memory.unwrap_or(50)
+        self.memory.unwrap_or(constants::DEFAULT_MEMORY_GB)
     }
     pub fn save_config_yaml(&self) -> io::Result<()> {
         let user_info = environment::UserInfo::load().unwrap();
@@ -135,109 +161,200 @@ transfer: false
         println!("Configuration saved to {}", file_path.display());
         Ok(())
     }
-    pub fn install_pod(&self) {
-        let config_dir = env::current_dir().unwrap().join("config");
+    pub fn install_pod(&self) -> Result<(), Box<dyn Error>> {
+        let config_dir = env::current_dir()?.join("config");
         let file_path = config_dir.join(format!("{}.yaml", self.container_name));
+        // let use_portforward = true;
         if !file_path.exists() {
             eprintln!("Configuration file not found: {}", file_path.display());
-            return;
+            return Ok(());
         }
         let output = Command::new("helm")
-            .args(&[
+            .args([
                 "install",
                 &self.container_name,
                 "med-helm/alpha",
                 "-f",
                 &file_path.to_string_lossy(),
             ])
-            .output()
-            .expect("Failed to install pod");
+            .output()?;
         if !output.status.success() {
-            eprintln!(
-                "Error installing pod: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Error in installing: \n{}", stderr).into());
         }
-        match host_handler::HostsFile::new() {
-            Ok(mut host_file) => {
-                let hostname = format!("{}.app.med.thu", self.container_name);
-                match host_file.add_entry(
-                    "166.11.153.65",
-                    &[&hostname],
-                    Some("Added by thumed_login"),
-                ) {
-                    Ok(_) => {
-                        println!("Hostname {} added to hosts file.", hostname);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Error adding hostname to hosts file: {}.\n
-                            You may need to add {} manually.",
-                            e, hostname
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Error creating hosts file: {}. \n
-                    You may need to manually add host:\n166.111.153.65 {}",
-                    e, self.container_name
-                );
-            }
-        }
+        Ok(())
+
+        // match host_handler::HostsFile::new() {
+        //     Ok(mut host_file) => {
+        //         let hostname = format!("{}.{}", self.container_name, constants::WEBSITE_DOMAIN);
+        //         match host_file.add_entry(
+        //             constants::SERVER_IP,
+        //             &[&hostname],
+        //             Some("Added by thumed_login"),
+        //         ) {
+        //             Ok(_) => {
+        //                 println!("Hostname {} added to hosts file.", hostname);
+        //                 Ok(())
+        //             }
+        //             Err(e) => {
+        //                 eprintln!(
+        //                     "Error adding hostname to hosts file: {}.\n
+        //                     You may need to add {} manually.",
+        //                     e, hostname
+        //                 );
+        //                 Ok(())
+        //             }
+        //         }
+        //     }
+        //     Err(e) => {
+        //         eprintln!(
+        //             "Error creating hosts file: {}. \n
+        //             You may need to manually add host:\n{} {}",
+        //             constants::SERVER_IP,
+        //             e,
+        //             self.container_name
+        //         );
+        //         Ok(())
+        //     }
+        // }
     }
 }
 
-pub struct PodList {
+pub struct PodHandler {
     pub pod_list: Vec<String>,
 }
 
-impl PodList {
+impl PodHandler {
     pub fn new() -> Self {
-        PodList {
+        PodHandler {
             pod_list: Vec::new(),
         }
     }
-    pub fn get_pod_list(&mut self) {
-        let stdout = utils::run_cmd("kubectl", &["get", "pods"]).unwrap();
-        let lines: Vec<&str> = stdout.lines().collect();
-        let mut pod_list = Vec::new();
-        for line in lines.iter().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if !parts.is_empty() {
-                pod_list.push(parts[0].to_string());
+    pub fn get_pod_list(&mut self) -> Result<(), Box<dyn Error>> {
+        match utils::run_cmd("kubectl", &["get", "pods"]) {
+            Ok(stdout) => {
+                let lines: Vec<&str> = stdout.lines().collect();
+                let mut pod_list = Vec::new();
+                for line in lines.iter().skip(1) {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        pod_list.push(parts[0].to_string());
+                    }
+                }
+                self.pod_list = pod_list;
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("Failed to get pod list: {}", e);
+                Err(e)
             }
         }
-        self.pod_list = pod_list;
     }
 
     pub fn display(&self) {
         println!("Pods:");
         for pod in &self.pod_list {
-            let website = pod.split('-').collect::<Vec<&str>>()[0].to_string() + ".app.med.thu";
-            println!("Pod ID: {}, Website: {}", pod, website);
+            // let website = "http://".to_string()
+            //     + pod.split('-').collect::<Vec<&str>>()[0]
+            //     + "."
+            //     + constants::WEBSITE_DOMAIN
+            //     + "/";
+            // println!("Pod ID: {}; Website: \"{}\"", pod, website);
+            println!("Pod ID: {};", pod);
         }
     }
-    pub fn login_pod(&self) {}
-    pub fn uninstall_pod(&self) {
+
+    pub fn forward_pod(&self) -> Result<(), Box<dyn Error>> {
+        println!("Select the pod name to portward:");
+        let mut pod_name = String::new();
+        io::stdin().read_line(&mut pod_name)?;
+        let pod_name = pod_name.trim();
+        self.forward_pod_by_name(pod_name)
+    }
+
+    pub fn forward_pod_by_name(&self, pod_name: &str) -> Result<(), Box<dyn Error>> {
+        if self.pod_list.contains(&pod_name.to_string()) {
+            println!("Portward to pod: {}...", pod_name);
+            Command::new("kubectl").args(["port-forward", pod_name, "8787:8787"]);
+            Ok(())
+        } else {
+            Err(format!("Pod {} not found in the list", pod_name).into())
+        }
+    }
+
+    pub fn login_pod(&self) -> Result<(), Box<dyn Error>> {
+        println!("Please input the pod name you want to login:");
+        let mut pod_name = String::new();
+        io::stdin().read_line(&mut pod_name)?;
+        let pod_name = pod_name.trim();
+
+        self.login_pod_by_name(pod_name)
+    }
+
+    // Login to a pod by its name (for CLI usage)
+    pub fn login_pod_by_name(&self, pod_name: &str) -> Result<(), Box<dyn Error>> {
+        if self.pod_list.contains(&pod_name.to_string()) {
+            println!("Connecting to pod: {}...", pod_name);
+            // Use Command::status to run interactively instead of output
+            match Command::new("kubectl")
+                .args(["exec", "-it", pod_name, "--", "sh", "/cmd.sh"])
+                .status()
+            {
+                Ok(status) => {
+                    if !status.success() {
+                        eprintln!("Error: kubectl command failed with status: {}", status);
+                        return Err(
+                            format!("kubectl command failed with status: {}", status).into()
+                        );
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("Failed to execute kubectl command: {}", e);
+                    Err(e.into())
+                }
+            }
+        } else {
+            Err(format!("Pod {} not found in the list", pod_name).into())
+        }
+    }
+    pub fn uninstall_pod(&mut self) -> Result<(), Box<dyn Error>> {
         println!("Please input the pod name you want to uninstall:");
         let mut pod_name = String::new();
-        io::stdin()
-            .read_line(&mut pod_name)
-            .expect("Failed to read line");
-        let output = Command::new("helm")
-            .args(&["uninstall", &pod_name])
+        io::stdin().read_line(&mut pod_name)?;
+        pod_name = pod_name.trim().to_string();
+
+        self.uninstall_pod_by_name(&pod_name)
+    }
+
+    // Uninstall a pod by its name (for CLI usage)
+    pub fn uninstall_pod_by_name(&mut self, pod_name: &str) -> Result<(), Box<dyn Error>> {
+        if !self.pod_list.contains(&pod_name.to_string()) {
+            eprintln!("Pod {} not found in the list.", pod_name);
+            return Err(format!("Pod {} not found in the list", pod_name).into());
+        }
+
+        let podname_split = pod_name.split('-').next().unwrap_or(pod_name);
+
+        match Command::new("helm")
+            .args(["uninstall", podname_split])
             .output()
-            .expect("Failed to uninstall pod");
-        if output.status.success() {
-            println!("Pod uninstalled successfully.");
-        } else {
-            eprintln!(
-                "Error uninstalling pod: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    println!("Pod uninstalled successfully.");
+                    self.get_pod_list()?;
+                    Ok(())
+                } else {
+                    let error_msg = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("Error uninstalling pod: {}", error_msg);
+                    Err(format!("Failed to uninstall pod: {}", error_msg).into())
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to run helm uninstall command: {}", e);
+                Err(e.into())
+            }
         }
     }
 }

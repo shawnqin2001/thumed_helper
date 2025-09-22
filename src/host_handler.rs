@@ -161,7 +161,7 @@ impl HostsFile {
 
         // Use PowerShell to copy the file with elevation
         let status = std::process::Command::new("powershell")
-            .args(&[
+            .args([
                 "-Command",
                 &format!(
                     "Start-Process powershell -Verb RunAs -ArgumentList '-Command Copy-Item -Path \"{}\" -Destination \"{}\" -Force'",
@@ -204,7 +204,7 @@ impl HostsFile {
         };
 
         let status = std::process::Command::new(sudo_cmd)
-            .args(&["cp", temp_path.to_str().unwrap(), &self.path])
+            .args(["cp", temp_path.to_str().unwrap(), &self.path])
             .status()?;
 
         // Clean up temp file

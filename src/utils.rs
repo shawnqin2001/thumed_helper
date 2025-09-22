@@ -1,24 +1,30 @@
+use crate::{constants, platform};
 use std::error::Error;
 use std::path::Path;
 use std::process::Command;
-// Run a command with returning code and output
-
-// Run a command with returning code
+// Run a command and return its output as a string
+// Returns an error if the command fails or if stdout cannot be converted to a string
 pub fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, Box<dyn Error>> {
-    let mut cmd = Command::new(cmd);
-    cmd.args(args);
-    let output = cmd.output()?;
+    let mut command = Command::new(cmd);
+    command.args(args);
+    let output = command.output()?;
+
+    if !output.status.success() {
+        let error_message = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("Command '{}' failed: {}", cmd, error_message).into());
+    }
+
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>> {
     println!("Downloading from: {}", url);
 
-    if cfg!(target_os = "windows") {
+    if platform::is_windows() {
         // Use PowerShell on Windows
         let status = Command::new("powershell")
             .arg("-Command")
-            .arg(&format!(
+            .arg(format!(
                 "Invoke-WebRequest -Uri '{}' -OutFile '{}'",
                 url,
                 output_path.to_string_lossy()
@@ -31,7 +37,7 @@ pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>
     } else {
         // Use curl on Unix-like systems
         let status = Command::new("curl")
-            .args(&["-L", "-o", &output_path.to_string_lossy(), url])
+            .args(["-L", "-o", &output_path.to_string_lossy(), url])
             .status()?;
 
         if !status.success() {
@@ -40,9 +46,9 @@ pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>
     }
 
     // Make the file executable on Unix-like systems
-    if !cfg!(target_os = "windows") {
+    if platform::is_unix() {
         let status = Command::new("chmod")
-            .args(&["+x", &output_path.to_string_lossy()])
+            .args(["+x", &output_path.to_string_lossy()])
             .status()?;
 
         if !status.success() {
@@ -55,7 +61,7 @@ pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>
 }
 
 fn get_os_and_arch() -> Result<(String, String), Box<dyn Error>> {
-    let os = if cfg!(target_os = "windows") {
+    let os = if platform::is_windows() {
         "windows".to_string()
     } else if cfg!(target_os = "macos") {
         "darwin".to_string()
@@ -77,11 +83,7 @@ fn get_os_and_arch() -> Result<(String, String), Box<dyn Error>> {
 }
 
 pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let kubectl_path = bin_dir.join(if cfg!(windows) {
-        "kubectl.exe"
-    } else {
-        "kubectl"
-    });
+    let kubectl_path = platform::get_bin_path(bin_dir, "kubectl");
 
     if kubectl_path.exists() {
         println!("kubectl already exists, skipping download");
@@ -91,9 +93,9 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("Downloading kubectl...");
 
     let (os, arch) = get_os_and_arch()?;
-    let version = "v1.28.4"; // Use a stable version
+    let version = constants::KUBECTL_VERSION; // Use a stable version
 
-    let download_url = if os == "windows" {
+    let download_url = if platform::is_windows() {
         format!(
             "https://dl.k8s.io/release/{}/bin/windows/{}/kubectl.exe",
             version, arch
@@ -112,7 +114,7 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let helm_path = bin_dir.join(if cfg!(windows) { "helm.exe" } else { "helm" });
+    let helm_path = platform::get_bin_path(bin_dir, "helm");
 
     if helm_path.exists() {
         println!("helm already exists, skipping download");
@@ -122,7 +124,7 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("Downloading helm...");
 
     let (os, arch) = get_os_and_arch()?;
-    let version = "v3.12.3"; // Use a stable version
+    let version = constants::HELM_VERSION; // Use a stable version
 
     // Adjust OS name to match Helm's naming convention
     let helm_os = match os.as_str() {
@@ -156,12 +158,13 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
 fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
     println!("Extracting: {}", gz_path.display());
 
-    if cfg!(target_os = "windows") {
+    let extract_dir = gz_path.parent().unwrap();
+
+    if platform::is_windows() {
         // Use PowerShell on Windows to extract .tar.gz
-        let extract_dir = gz_path.parent().unwrap();
         let status = Command::new("powershell")
             .arg("-Command")
-            .arg(&format!(
+            .arg(format!(
                 "tar -xzf '{}' -C '{}'",
                 gz_path.to_string_lossy(),
                 extract_dir.to_string_lossy()
@@ -173,9 +176,8 @@ fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<(), Box<dyn Err
         }
     } else {
         // Use tar on Unix-like systems
-        let extract_dir = gz_path.parent().unwrap();
         let status = Command::new("tar")
-            .args(&[
+            .args([
                 "-xzf",
                 &gz_path.to_string_lossy(),
                 "-C",
