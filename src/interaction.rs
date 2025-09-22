@@ -7,7 +7,7 @@ pub fn get_user_action() -> Result<u8, Error> {
     println!("2. List Pod and Website Address");
     println!("3. Install Pod");
     println!("4. Login Pod in the Terminal (Linux Command Line Interface)");
-    println!("5. Access Website (RStudio)");
+    println!("5. Access Web server (RStudio)");
     println!("6. Uninstall Pod");
     println!("7. Update User info");
     print!("Enter action: ");
