@@ -8,84 +8,34 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   PROJECT_NAME: thumed_helper
+
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-x86   # Intel macOS runner
             target: x86_64-apple-darwin
-            binary_path: target/release/thumed_helper
-            asset_name: thumed_helper-macos-x86_64
-          - os: macos-latest
+          - os: macos-arm   # Apple Silicon runner
             target: aarch64-apple-darwin
-            binary_path: target/aarch64-apple-darwin/release/thumed_helper
-            asset_name: thumed_helper-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_path: target/release/thumed_helper.exe
-            asset_name: thumed_helper-windows-x86_64.exe
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-${{ matrix.target }}-cargo
-      - name: Build for macOS ARM
-        if: matrix.target == 'aarch64-apple-darwin'
-        run: cargo build --release --target aarch64-apple-darwin
-      - name: Build (standard)
-        if: matrix.target != 'aarch64-apple-darwin'
-        run: cargo build --release
-      - name: Create directory for artifact
-        run: |
-          mkdir -p ${{ matrix.asset_name }}
-          cp ${{ matrix.binary_path }} ${{ matrix.asset_name }}/
-      - name: Compress artifact (Windows)
-        if: runner.os == 'Windows'
-        run: 7z a ${{ matrix.asset_name }}.zip ${{ matrix.asset_name }}
-      - name: Compress artifact (Unix)
-        if: runner.os != 'Windows'
-        run: tar -czvf ${{ matrix.asset_name }}.tar.gz ${{ matrix.asset_name }}
+      - uses: actions/checkout@v4
+
+      # - name: Install Rust
+      #   uses: dtolnay/rust-toolchain@stable
+      #   with:
+      #     targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}.*
-          if-no-files-found: error
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Display directory structure for debugging
-        run: ls -R artifacts
-      - name: Create release
-        uses: softprops/action-gh-release@v1
-        with:
-          draft: false
-          prerelease: false
-          files: artifacts/**/*
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*
