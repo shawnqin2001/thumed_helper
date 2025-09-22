@@ -1,5 +1,6 @@
 use crate::constants;
 use crate::environment;
+use crate::environment::DirManager;
 use crate::utils;
 // use crate::host_handler;
 use std::env;
@@ -7,7 +8,7 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug)]
 pub struct PodConfig {
@@ -21,7 +22,7 @@ impl PodConfig {
         let mut container_name = String::new();
         loop {
             container_name.clear();
-            println!("Please input the pods' name (only lowercase letters and numbers allowed):");
+            println!("Please input the pod's name (only lowercase letters and numbers allowed):");
             io::stdin()
                 .read_line(&mut container_name)
                 .expect("Failed to read line");
@@ -34,8 +35,7 @@ impl PodConfig {
                 break;
             } else {
                 println!(
-                    "Invalid input. Please enter a valid name,
-                    only lowercase letters and numbers are allowed."
+                    "Invalid input. Please enter a valid name: only lowercase letters and numbers are allowed."
                 );
             }
         }
@@ -85,36 +85,19 @@ impl PodConfig {
         }
     }
 
-    // Create a new PodConfig with provided parameters
-    pub fn new_with_params(container_name: String, cpu: Option<u8>, memory: Option<u8>) -> Self {
-        // Validate container name
-        if !container_name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            || container_name.is_empty()
-        {
-            panic!("Invalid pod name: must contain only lowercase letters and numbers");
-        }
-
-        PodConfig {
-            container_name,
-            cpu,
-            memory,
-        }
-    }
     fn get_cpu(&self) -> u8 {
         self.cpu.unwrap_or(constants::DEFAULT_CPU_CORES)
     }
     fn get_memory(&self) -> u8 {
         self.memory.unwrap_or(constants::DEFAULT_MEMORY_GB)
     }
-    pub fn save_config_yaml(&self) -> io::Result<()> {
-        let user_info = environment::UserInfo::load().unwrap();
+    pub fn save_config_yaml(&self, dirman: &DirManager) -> io::Result<()> {
+        let user_info = environment::UserInfo::load(dirman).unwrap();
         let yaml_content = format!(
             r#"replicaCount: 1
 
 image:
-  repository: base.med.thu/public/rstudio
+  repository: base.med.thu/public/r-4.3
   pullPolicy: Always
   tag: "v1"
 
@@ -254,18 +237,12 @@ impl PodHandler {
     pub fn display(&self) {
         println!("Pods:");
         for pod in &self.pod_list {
-            // let website = "http://".to_string()
-            //     + pod.split('-').collect::<Vec<&str>>()[0]
-            //     + "."
-            //     + constants::WEBSITE_DOMAIN
-            //     + "/";
-            // println!("Pod ID: {}; Website: \"{}\"", pod, website);
             println!("Pod ID: {};", pod);
         }
     }
 
     pub fn forward_pod(&self) -> Result<(), Box<dyn Error>> {
-        println!("Select the pod name to portward:");
+        println!("Select the pod name to access the web service:");
         let mut pod_name = String::new();
         io::stdin().read_line(&mut pod_name)?;
         let pod_name = pod_name.trim();
@@ -274,16 +251,39 @@ impl PodHandler {
 
     pub fn forward_pod_by_name(&self, pod_name: &str) -> Result<(), Box<dyn Error>> {
         if self.pod_list.contains(&pod_name.to_string()) {
-            println!("Portward to pod: {}...", pod_name);
-            Command::new("kubectl").args(["port-forward", pod_name, "8787:8787"]);
-            Ok(())
+            println!("Port-forward to pod: {}...", pod_name);
+            let mut child = Command::new("kubectl")
+                .args(["port-forward", pod_name, "8787:8787"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("Failed to start kubectl port-forward command");
+            println!("Port forwarding started. Press Ctrl+C to stop.");
+            println!("Open http://localhost:8787 in your browser to access Rstudio.");
+
+            match child.wait() {
+                Ok(status) => {
+                    if !status.success() {
+                        eprintln!("Error: kubectl command failed with status: {}", status);
+                        return Err(
+                            format!("kubectl command failed with status: {}", status).into()
+                        );
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("Failed to execute kubectl command: {}", e);
+                    Err(e.into())
+                }
+            }
         } else {
             Err(format!("Pod {} not found in the list", pod_name).into())
         }
     }
 
     pub fn login_pod(&self) -> Result<(), Box<dyn Error>> {
-        println!("Please input the pod name you want to login:");
+        println!("Please input the pod name you want to log in:");
         let mut pod_name = String::new();
         io::stdin().read_line(&mut pod_name)?;
         let pod_name = pod_name.trim();

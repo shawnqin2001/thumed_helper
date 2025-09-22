@@ -1,0 +1,36 @@
+replicaCount: 1
+
+image:
+  repository: base.med.thu/public/r-4.3
+  pullPolicy: Always
+  tag: "v1"
+
+containerName: "qinxh23"
+
+service:
+  type: ClusterIP
+  port: 8787
+
+resources:
+  limits:
+    cpu: "16"
+    memory: "50"
+
+imageCredentials:
+  registry: base.med.thu
+  username: qinxianhan
+  password: Qinxh23
+
+loadDataPath:
+  public:
+    - "input"
+    - "lessonPublic"
+  personal:
+    - "qinxianhan"
+
+type: centos
+
+nfs: "Aries"
+
+transfer: false
+        

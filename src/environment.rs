@@ -1,18 +1,33 @@
 use crate::{constants, platform, utils};
-use dirs;
 use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub struct PathManager {
-    pub config_path: PathBuf,
-    pub bin_path: PathBuf,
+pub struct DirManager {
+    pub config_dir: PathBuf,
+    pub bin_dir: PathBuf,
 }
 
-impl PathManager {
-    pub fn new(app_name: &str) {}
+impl DirManager {
+    pub fn new(app_name: &str) -> Self {
+        let home = dirs::home_dir().unwrap();
+        let config_dir = dirs::config_local_dir().unwrap_or_else(|| home.join(".config"));
+        let config_dir = config_dir.join(app_name);
+        let bin_dir = dirs::data_local_dir().unwrap_or_else(|| {
+            if cfg!(target_os = "windows") {
+                home.join("AppData/Roaming")
+            } else {
+                home.join(".local/bin")
+            }
+        });
+        let bin_dir = bin_dir.join(app_name);
+        DirManager {
+            config_dir,
+            bin_dir,
+        }
+    }
 }
 
 pub struct UserInfo {
@@ -26,10 +41,10 @@ impl UserInfo {
     }
 
     // Get the path to the config file
-    fn get_config_path() -> Result<PathBuf, Box<dyn Error>> {
-        let config_dir = env::current_dir()?.join("config");
+    fn get_config_path(dirman: &DirManager) -> Result<PathBuf, Box<dyn Error>> {
+        let config_dir = &dirman.config_dir;
         if !config_dir.exists() {
-            std::fs::create_dir_all(&config_dir)?;
+            std::fs::create_dir_all(config_dir)?;
         }
         Ok(config_dir.join("user.config"))
     }
@@ -43,9 +58,12 @@ impl UserInfo {
         Ok(input.trim().to_string())
     }
 
-    // Read user credentials from file or prompt user
-    fn get_credentials(show_current: bool) -> Result<(String, String), Box<dyn Error>> {
-        let config_path = Self::get_config_path()?;
+    // Get credentials from config file or prompt user
+    fn get_credentials(
+        dirman: &DirManager,
+        show_current: bool,
+    ) -> Result<(String, String), Box<dyn Error>> {
+        let config_path = Self::get_config_path(dirman)?;
 
         if config_path.exists() {
             let mut file = File::open(&config_path)?;
@@ -75,20 +93,20 @@ impl UserInfo {
             println!("No user configuration found. Please enter credentials:");
         }
 
-        let user = Self::read_input("Username: (Your Fullname)")?;
+        let user = Self::read_input("Username: (Your full name)")?;
         let password = Self::read_input("Password: (Default: Test1234)")?;
 
         Ok((user, password))
     }
 
-    pub fn update_user() -> Result<Self, Box<dyn Error>> {
+    pub fn update_user(dirman: &DirManager) -> Result<Self, Box<dyn Error>> {
         // Show current values before updating
-        let _ = Self::get_credentials(true);
+        let _ = Self::get_credentials(dirman, true);
 
         // Always prompt for new credentials when updating
         let (user, password) = Self::read_input_credentials()?;
         let user_info = UserInfo::new(user, password);
-        user_info.save()?;
+        user_info.save(dirman)?;
 
         Ok(user_info)
     }
@@ -100,23 +118,23 @@ impl UserInfo {
         Ok((user, password))
     }
 
-    pub fn load() -> Result<Self, Box<dyn Error>> {
-        let config_path = Self::get_config_path()?;
+    pub fn load(dirman: &DirManager) -> Result<Self, Box<dyn Error>> {
+        let config_path = Self::get_config_path(dirman)?;
 
         if config_path.exists() {
-            let (user, password) = Self::get_credentials(false)?;
+            let (user, password) = Self::get_credentials(dirman, false)?;
             Ok(UserInfo::new(user, password))
         } else {
             println!("No user configuration found. Please enter credentials:");
             let (user, password) = Self::read_input_credentials()?;
             let user_info = UserInfo::new(user, password);
-            user_info.save()?;
+            user_info.save(dirman)?;
             Ok(user_info)
         }
     }
 
-    fn save(&self) -> Result<(), Box<dyn Error>> {
-        let config_path = Self::get_config_path()?;
+    fn save(&self, dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+        let config_path = Self::get_config_path(dirman)?;
         let mut file = File::create(&config_path)?;
         writeln!(file, "{}", self.user)?;
         writeln!(file, "{}", self.password)?;
@@ -125,8 +143,8 @@ impl UserInfo {
     }
 }
 // Add Path to Environment Variable
-pub fn add_path(path: &str) -> Result<(), Box<dyn Error>> {
-    let path_str = path.to_string();
+pub fn add_path(path: &Path) -> Result<(), Box<dyn Error>> {
+    let path_str = path.display().to_string();
     let paths = env::var("PATH")?;
     let mut path_vec: Vec<String> = env::split_paths(&paths)
         .map(|p| p.to_string_lossy().to_string())
@@ -147,27 +165,25 @@ pub fn add_path(path: &str) -> Result<(), Box<dyn Error>> {
     };
     Ok(())
 }
-pub fn ensure_tools_available() -> Result<(), Box<dyn Error>> {
-    let bin_dir = std::env::current_dir()?.join("bin");
 
+pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+    let bin_dir = &dirman.bin_dir;
     if !bin_dir.exists() {
         println!("Creating bin directory...");
-        std::fs::create_dir_all(&bin_dir)?;
+        std::fs::create_dir_all(bin_dir)?;
     }
 
-    add_path(bin_dir.to_string_lossy().as_ref())?;
-
-    let kubectl_path = platform::get_bin_path(&bin_dir, "kubectl");
-    let helm_path = platform::get_bin_path(&bin_dir, "helm");
+    let kubectl_path = platform::get_bin_path(bin_dir, "kubectl");
+    let helm_path = platform::get_bin_path(bin_dir, "helm");
 
     let kubectl_exists = kubectl_path.exists();
     let helm_exists = helm_path.exists();
 
     if !kubectl_exists || !helm_exists {
-        println!("Some required tools are missing. Will attempt to download them:");
+        println!("Some required tools are missing. Attempting to download:");
 
         if !kubectl_exists {
-            match utils::download_kubectl(&bin_dir) {
+            match utils::download_kubectl(bin_dir) {
                 Ok(_) => println!("Successfully downloaded kubectl"),
                 Err(e) => println!(
                     "Failed to download kubectl: {}. Please download it manually.",
@@ -177,7 +193,7 @@ pub fn ensure_tools_available() -> Result<(), Box<dyn Error>> {
         }
 
         if !helm_exists {
-            match utils::download_helm(&bin_dir) {
+            match utils::download_helm(bin_dir) {
                 Ok(_) => println!("Successfully downloaded helm"),
                 Err(e) => println!(
                     "Failed to download helm: {}. Please download it manually.",
@@ -214,7 +230,7 @@ pub fn ensure_tools_available() -> Result<(), Box<dyn Error>> {
         println!("helm is still missing. Please download it manually from:");
         println!("helm: https://github.com/helm/helm/releases");
     }
-
+    add_path(bin_dir)?;
     Ok(())
 }
 
@@ -240,19 +256,21 @@ fn init_helm() -> Result<(), Box<dyn Error>> {
     println!("{}", helm_update);
     Ok(())
 }
+
 pub fn check_env() {
     println!("Checking environment...");
-    match UserInfo::load() {
+    let dir_manager = DirManager::new("thumed_helper");
+    match UserInfo::load(&dir_manager) {
         Ok(user_info) => {
             println!("User: {}", user_info.user);
             println!("Password: {}", user_info.password);
         }
         Err(e) => {
-            println! {"Error loading user info:\n {}", e};
+            println! {"Failed to load user information:\n {}", e};
             return;
         }
     }
-    match ensure_tools_available() {
+    match ensure_tools_available(&dir_manager) {
         Ok(_) => println!("Tool directory setup complete"),
         Err(e) => println!("{}", e),
     }

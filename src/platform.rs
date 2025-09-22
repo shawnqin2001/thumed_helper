@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::env::consts::OS;
+use std::path::{Path, PathBuf};
 
 // Get the executable name with the platform-appropriate extension
 pub fn get_exe_name(name: &str) -> String {
@@ -26,19 +26,19 @@ pub fn is_unix() -> bool {
 }
 
 // Get the appropriate shell command for the platform
-pub fn get_shell_cmd() -> &'static str {
-    if is_windows() {
-        "powershell"
-    } else {
-        "sh"
-    }
-}
+// pub fn get_shell_cmd() -> &'static str {
+//     if is_windows() {
+//         "powershell"
+//     } else {
+//         "sh"
+//     }
+// }
 
 // Get the appropriate path separator for the platform
-pub fn get_path_separator() -> &'static str {
-    if is_windows() {
-        ";"
-    } else {
-        ":"
-    }
-}
+// pub fn get_path_separator() -> &'static str {
+//     if is_windows() {
+//         ";"
+//     } else {
+//         ":"
+//     }
+// }
