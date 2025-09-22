@@ -4,7 +4,7 @@ pub fn get_user_action() -> Result<u8, Error> {
     println!("\nWhat would you like to do?");
     println!("0. Exit");
     println!("1. Initialize / Check Environment");
-    println!("2. List Pod and Website Address");
+    println!("2. List Pods");
     println!("3. Install Pod");
     println!("4. Login Pod in the Terminal (Linux Command Line Interface)");
     println!("5. Access Web server (RStudio)");

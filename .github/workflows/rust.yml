@@ -1,9 +1,14 @@
 name: Rust Build & Release
+
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -16,9 +21,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-x86   # Intel macOS runner
+          - os: macos-13
             target: x86_64-apple-darwin
-          - os: macos-arm   # Apple Silicon runner
+          - os: macos-14
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -26,16 +31,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # - name: Install Rust
-      #   uses: dtolnay/rust-toolchain@stable
-      #   with:
-      #     targets: ${{ matrix.target }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+
+      - name: Prepare Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          zip -j ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip \
+            target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}
+
+      - name: Prepare Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe `
+            -DestinationPath ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/*
+          name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
+          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: ${{ env.PROJECT_NAME }}-*
+          merge-multiple: true
+
+      - name: Create Release and Upload Assets
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "artifacts/*"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
