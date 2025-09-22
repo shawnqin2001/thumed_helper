@@ -9,7 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  PROJECT_NAME: thumed_login
+  PROJECT_NAME: thumed_helper
 
 jobs:
   build:
@@ -21,16 +21,16 @@ jobs:
         include:
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary_path: target/release/thumed_login
-            asset_name: thumed_login-macos-x86_64
+            binary_path: target/release/thumed_helper
+            asset_name: thumed_helper-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_path: target/aarch64-apple-darwin/release/thumed_login
-            asset_name: thumed_login-macos-arm64
+            binary_path: target/aarch64-apple-darwin/release/thumed_helper
+            asset_name: thumed_helper-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_path: target/release/thumed_login.exe
-            asset_name: thumed_login-windows-x86_64.exe
+            binary_path: target/release/thumed_helper.exe
+            asset_name: thumed_helper-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v3
