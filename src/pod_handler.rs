@@ -3,7 +3,6 @@ use crate::environment;
 use crate::environment::DirManager;
 use crate::utils;
 // use crate::host_handler;
-use std::env;
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -136,16 +135,15 @@ transfer: false
             username = user_info.user,
             password = user_info.password
         );
-        let config_dir = env::current_dir()?.join("config");
-        fs::create_dir_all(&config_dir)?;
+        let config_dir = &dirman.config_dir;
         let file_path = config_dir.join(format!("{}.yaml", self.container_name));
         let mut file = fs::File::create(&file_path)?;
         file.write_all(yaml_content.as_bytes())?;
         println!("Configuration saved to {}", file_path.display());
         Ok(())
     }
-    pub fn install_pod(&self) -> Result<(), Box<dyn Error>> {
-        let config_dir = env::current_dir()?.join("config");
+    pub fn install_pod(&self, dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+        let config_dir = &dirman.config_dir;
         let file_path = config_dir.join(format!("{}.yaml", self.container_name));
         // let use_portforward = true;
         if !file_path.exists() {

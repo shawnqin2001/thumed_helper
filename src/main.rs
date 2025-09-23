@@ -48,7 +48,7 @@ fn main() {
                         println!("Error saving pod configuration: {}", e);
                         continue;
                     }
-                    if let Err(e) = pod_config.install_pod() {
+                    if let Err(e) = pod_config.install_pod(&dirman) {
                         println!("Error installing pod: {}", e);
                     }
                 }
