@@ -97,7 +97,7 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
 
     let download_url = if platform::is_windows() {
         format!(
-            "https://dl.k8s.io/release/{}/bin/windows/{}/kubectl",
+            "https://dl.k8s.io/release/{}/bin/windows/{}/kubectl.exe",
             version, arch
         )
     } else {
@@ -108,7 +108,11 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     };
 
     download_file(&download_url, &kubectl_path)?;
-
+    // rename kubectl.exe to kubectl on Windows
+    if platform::is_windows() {
+        let new_path = kubectl_path.with_file_name("kubectl");
+        std::fs::rename(&kubectl_path, &new_path)?;
+    }
     println!("kubectl downloaded successfully");
     Ok(())
 }
