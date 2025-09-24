@@ -202,7 +202,7 @@ impl PodHandler {
     pub fn display(&self) {
         println!("Pods:");
         for pod in &self.pod_list {
-            println!("Pod ID: {};", pod);
+            println!("Pod ID: {}", pod);
         }
     }
 
