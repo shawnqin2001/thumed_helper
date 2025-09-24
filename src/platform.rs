@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 // Get the executable name with the platform-appropriate extension
 pub fn get_exe_name(name: &str) -> String {
-    if OS == "windows" {
+    if is_windows() {
         format!("{}.exe", name)
     } else {
         name.to_string()
@@ -24,21 +24,3 @@ pub fn is_windows() -> bool {
 pub fn is_unix() -> bool {
     OS == "linux" || OS == "macos"
 }
-
-// Get the appropriate shell command for the platform
-// pub fn get_shell_cmd() -> &'static str {
-//     if is_windows() {
-//         "powershell"
-//     } else {
-//         "sh"
-//     }
-// }
-
-// Get the appropriate path separator for the platform
-// pub fn get_path_separator() -> &'static str {
-//     if is_windows() {
-//         ";"
-//     } else {
-//         ":"
-//     }
-// }

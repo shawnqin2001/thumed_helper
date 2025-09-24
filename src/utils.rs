@@ -108,7 +108,6 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     };
 
     download_file(&download_url, &kubectl_path)?;
-
     println!("kubectl downloaded successfully");
     Ok(())
 }
@@ -150,7 +149,11 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     // Extract binary from the tarball
     extract_gz_file(&temp_file, &helm_path)?;
     let extracted_dir = bin_dir.join(format!("{}-{}", helm_os, helm_arch));
-    let extracted_file = extracted_dir.join(if cfg!(windows) { "helm.exe" } else { "helm" });
+    let extracted_file = extracted_dir.join(if platform::is_windows() {
+        "helm.exe"
+    } else {
+        "helm"
+    });
     std::fs::rename(extracted_file, &helm_path)?;
     println!("helm downloaded successfully");
     Ok(())

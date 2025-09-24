@@ -142,27 +142,22 @@ impl UserInfo {
         Ok(())
     }
 }
-// Add Path to Environment Variable
 pub fn add_path(path: &Path) -> Result<(), Box<dyn Error>> {
     let path_str = path.display().to_string();
     let paths = env::var("PATH")?;
+
     let mut path_vec: Vec<String> = env::split_paths(&paths)
         .map(|p| p.to_string_lossy().to_string())
         .collect();
+
     if !path_vec.contains(&path_str) {
         path_vec.insert(0, path_str);
-        let new_path = env::join_paths(path_vec)?;
-        if platform::is_windows() {
-            utils::run_cmd(
-                "setx",
-                &["path", new_path.to_string_lossy().to_string().as_str()],
-            )?;
-        } else {
-            unsafe {
-                env::set_var("PATH", new_path);
-            }
-        };
-    };
+    }
+
+    let new_path = env::join_paths(path_vec)?;
+
+    env::set_var("PATH", new_path);
+
     Ok(())
 }
 
@@ -208,6 +203,7 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     // Re-check after potential downloads
     let kubectl_exists = kubectl_path.exists();
     let helm_exists = helm_path.exists();
+    add_path(bin_dir)?;
 
     if kubectl_exists {
         let bin_kubectl = kubectl_path.to_string_lossy().to_string();
@@ -230,13 +226,12 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
         println!("helm is still missing. Please download it manually from:");
         println!("helm: https://github.com/helm/helm/releases");
     }
-    add_path(bin_dir)?;
     Ok(())
 }
 
 fn init_helm() -> Result<(), Box<dyn Error>> {
     // Check if med-helm repo already exists
-    let helm_list = utils::run_cmd("helm", &["repo", "list"])?;
+    let helm_list = utils::run_cmd("helm", &["repo", "list"]).unwrap_or_default();
 
     if !helm_list.contains(constants::HELM_REPO_NAME) {
         let _helm_init = utils::run_cmd(
