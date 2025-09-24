@@ -3,11 +3,7 @@ use std::path::{Path, PathBuf};
 
 // Get the executable name with the platform-appropriate extension
 pub fn get_exe_name(name: &str) -> String {
-    if OS == "windows" {
-        format!("{}.exe", name)
-    } else {
-        name.to_string()
-    }
+    name.to_string()
 }
 
 // Get the path to a binary in the binary directory

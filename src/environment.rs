@@ -208,6 +208,7 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     // Re-check after potential downloads
     let kubectl_exists = kubectl_path.exists();
     let helm_exists = helm_path.exists();
+    add_path(bin_dir)?;
 
     if kubectl_exists {
         let bin_kubectl = kubectl_path.to_string_lossy().to_string();
@@ -230,13 +231,12 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
         println!("helm is still missing. Please download it manually from:");
         println!("helm: https://github.com/helm/helm/releases");
     }
-    add_path(bin_dir)?;
     Ok(())
 }
 
 fn init_helm() -> Result<(), Box<dyn Error>> {
     // Check if med-helm repo already exists
-    let helm_list = utils::run_cmd("helm", &["repo", "list"])?;
+    let helm_list = utils::run_cmd("helm", &["repo", "list"]).unwrap_or_default();
 
     if !helm_list.contains(constants::HELM_REPO_NAME) {
         let _helm_init = utils::run_cmd(

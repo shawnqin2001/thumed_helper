@@ -97,7 +97,7 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
 
     let download_url = if platform::is_windows() {
         format!(
-            "https://dl.k8s.io/release/{}/bin/windows/{}/kubectl.exe",
+            "https://dl.k8s.io/release/{}/bin/windows/{}/kubectl",
             version, arch
         )
     } else {
@@ -150,7 +150,7 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     // Extract binary from the tarball
     extract_gz_file(&temp_file, &helm_path)?;
     let extracted_dir = bin_dir.join(format!("{}-{}", helm_os, helm_arch));
-    let extracted_file = extracted_dir.join(if cfg!(windows) { "helm.exe" } else { "helm" });
+    let extracted_file = extracted_dir.join("helm");
     std::fs::rename(extracted_file, &helm_path)?;
     println!("helm downloaded successfully");
     Ok(())
