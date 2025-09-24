@@ -163,6 +163,7 @@ pub fn add_path(path: &Path) -> Result<(), Box<dyn Error>> {
 
 pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>> {
     let bin_dir = &dirman.bin_dir;
+    add_path(bin_dir)?;
     if !bin_dir.exists() {
         println!("Creating bin directory...");
         std::fs::create_dir_all(bin_dir)?;
@@ -203,11 +204,10 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     // Re-check after potential downloads
     let kubectl_exists = kubectl_path.exists();
     let helm_exists = helm_path.exists();
-    add_path(bin_dir)?;
 
     if kubectl_exists {
-        let bin_kubectl = kubectl_path.to_string_lossy().to_string();
-        match utils::run_cmd(&bin_kubectl, &["version", "--client"]) {
+        // let bin_kubectl = kubectl_path.to_string_lossy().to_string();
+        match utils::run_cmd("kubectl", &["version", "--client"]) {
             Ok(_) => println!("kubectl is working correctly"),
             Err(e) => println!("Warning: kubectl may not be working: {}", e),
         }
@@ -217,8 +217,8 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     }
 
     if helm_exists {
-        let bin_helm = helm_path.to_string_lossy().to_string();
-        match utils::run_cmd(&bin_helm, &["version"]) {
+        // let bin_helm = helm_path.to_string_lossy().to_string();
+        match utils::run_cmd("helm", &["version"]) {
             Ok(_) => println!("helm is working correctly"),
             Err(e) => println!("Warning: helm may not be working: {}", e),
         }
