@@ -17,7 +17,7 @@ impl DirManager {
         let config_dir = config_dir.join(app_name);
         let bin_dir = dirs::data_local_dir().unwrap_or_else(|| {
             if cfg!(target_os = "windows") {
-                home.join("AppData/Roaming")
+                home.join("AppData/Local")
             } else {
                 home.join(".local/bin")
             }
@@ -92,10 +92,11 @@ impl UserInfo {
         if !show_current {
             println!("No user configuration found. Please enter credentials:");
         }
-
         let user = Self::read_input("Username: (Your full name)")?;
-        let password = Self::read_input("Password: (Default: Test1234)")?;
-
+        let mut password = Self::read_input("Password: (Default: Test1234)")?;
+        if password.is_empty() {
+            password = "Test1234".to_string();
+        }
         Ok((user, password))
     }
 
