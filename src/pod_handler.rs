@@ -1,12 +1,10 @@
 use crate::constants;
 use crate::environment;
 use crate::environment::DirManager;
+use crate::error::{Result, ThumedError};
 use crate::utils;
-// use crate::host_handler;
-use std::error::Error;
 use std::fs;
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 #[derive(Debug)]
@@ -17,6 +15,7 @@ pub struct PodConfig {
 }
 
 impl PodConfig {
+    /// Create a new PodConfig interactively by prompting the user
     pub fn new() -> Self {
         let mut container_name = String::new();
         loop {
@@ -38,6 +37,25 @@ impl PodConfig {
                 );
             }
         }
+        let cpu = Self::prompt_cpu();
+        let memory = Self::prompt_memory();
+        PodConfig {
+            container_name,
+            cpu,
+            memory,
+        }
+    }
+
+    /// Create a PodConfig from CLI arguments (non-interactive)
+    pub fn from_args(name: String, cpu: Option<u8>, memory: Option<u8>) -> Self {
+        PodConfig {
+            container_name: name,
+            cpu,
+            memory,
+        }
+    }
+
+    fn prompt_cpu() -> Option<u8> {
         let mut cpu = String::new();
         println!(
             "Please input the CPU limit (in cores, default: {}):",
@@ -46,18 +64,20 @@ impl PodConfig {
         io::stdin()
             .read_line(&mut cpu)
             .expect("Failed to read line");
-        let cpu = if cpu.trim().is_empty() {
+        if cpu.trim().is_empty() {
             None
         } else {
             match cpu.trim().parse::<u8>() {
                 Ok(cpu) => Some(cpu),
                 Err(_) => {
-                    println!("Invalid input. Please enter a valid number.");
+                    println!("Invalid input. Using default.");
                     None
                 }
             }
-        };
+        }
+    }
 
+    fn prompt_memory() -> Option<u8> {
         let mut memory = String::new();
         println!(
             "Please input the memory limit (in GB, default: {}):",
@@ -66,21 +86,16 @@ impl PodConfig {
         io::stdin()
             .read_line(&mut memory)
             .expect("Failed to read line");
-        let memory = if memory.trim().is_empty() {
+        if memory.trim().is_empty() {
             None
         } else {
             match memory.trim().parse::<u8>() {
                 Ok(memory) => Some(memory),
                 Err(_) => {
-                    println!("Invalid input. Please enter a valid number.");
+                    println!("Invalid input. Using default.");
                     None
                 }
             }
-        };
-        PodConfig {
-            container_name,
-            cpu,
-            memory,
         }
     }
 
@@ -90,8 +105,8 @@ impl PodConfig {
     fn get_memory(&self) -> u8 {
         self.memory.unwrap_or(constants::DEFAULT_MEMORY_GB)
     }
-    pub fn save_config_yaml(&self, dirman: &DirManager) -> io::Result<()> {
-        let user_info = environment::UserInfo::load(dirman).unwrap();
+    pub fn save_config_yaml(&self, dirman: &DirManager) -> Result<()> {
+        let user_info = environment::UserInfo::load(dirman)?;
         let yaml_content = format!(
             r#"replicaCount: 1
 
@@ -142,13 +157,14 @@ transfer: false
         println!("Configuration saved to {}", file_path.display());
         Ok(())
     }
-    pub fn install_pod(&self, dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+    pub fn install_pod(&self, dirman: &DirManager) -> Result<()> {
         let config_dir = &dirman.config_dir;
         let file_path = config_dir.join(format!("{}.yaml", self.container_name));
-        // let use_portforward = true;
         if !file_path.exists() {
-            eprintln!("Configuration file not found: {}", file_path.display());
-            return Ok(());
+            return Err(ThumedError::Config(format!(
+                "Configuration file not found: {}",
+                file_path.display()
+            )));
         }
         let output = Command::new("helm")
             .args([
@@ -161,7 +177,10 @@ transfer: false
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Error in installing: \n{}", stderr).into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "helm install".to_string(),
+                stderr: stderr.to_string(),
+            });
         }
         println!("Pod installed successfully.");
         Ok(())
@@ -178,35 +197,28 @@ impl PodHandler {
             pod_list: Vec::new(),
         }
     }
-    pub fn get_pod_list(&mut self) -> Result<(), Box<dyn Error>> {
-        match utils::run_cmd("kubectl", &["get", "pods"]) {
-            Ok(stdout) => {
-                let lines: Vec<&str> = stdout.lines().collect();
-                let mut pod_list = Vec::new();
-                for line in lines.iter().skip(1) {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if !parts.is_empty() {
-                        pod_list.push(parts[0].to_string());
-                    }
-                }
-                self.pod_list = pod_list;
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("Failed to get pod list: {}", e);
-                Err(e)
+    pub fn get_pod_list(&mut self) -> Result<()> {
+        let stdout = utils::run_cmd("kubectl", &["get", "pods"])?;
+        let lines: Vec<&str> = stdout.lines().collect();
+        let mut pod_list = Vec::new();
+        for line in lines.iter().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if !parts.is_empty() {
+                pod_list.push(parts[0].to_string());
             }
         }
+        self.pod_list = pod_list;
+        Ok(())
     }
 
     pub fn display(&self) {
         println!("Pods:");
         for pod in &self.pod_list {
-            println!("Pod ID: {};", pod);
+            println!("Pod ID: {}", pod);
         }
     }
 
-    pub fn forward_pod(&self) -> Result<(), Box<dyn Error>> {
+    pub fn forward_pod(&self) -> Result<()> {
         println!("Select the pod name to access the web service:");
         let mut pod_name = String::new();
         io::stdin().read_line(&mut pod_name)?;
@@ -214,112 +226,95 @@ impl PodHandler {
         self.forward_pod_by_name(pod_name)
     }
 
-    pub fn forward_pod_by_name(&self, pod_name: &str) -> Result<(), Box<dyn Error>> {
-        if self.pod_list.contains(&pod_name.to_string()) {
-            println!("Port-forward to pod: {}...", pod_name);
-            let mut child = Command::new("kubectl")
-                .args(["port-forward", pod_name, "8787:8787"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("Failed to start kubectl port-forward command");
-            println!("Port forwarding started. Press Ctrl+C to stop.");
-            println!("Open http://localhost:8787 in your browser to access Rstudio.");
+    pub fn forward_pod_by_name(&self, pod_name: &str) -> Result<()> {
+        if !self.pod_list.contains(&pod_name.to_string()) {
+            return Err(ThumedError::PodNotFound(pod_name.to_string()));
+        }
+        println!("Port-forward to pod: {}...", pod_name);
+        let mut child = Command::new("kubectl")
+            .args(["port-forward", pod_name, "8787:8787"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| ThumedError::CommandFailed {
+                cmd: "kubectl port-forward".to_string(),
+                stderr: e.to_string(),
+            })?;
+        println!("Port forwarding started. Press Ctrl+C to stop.");
+        println!("Open http://localhost:8787 in your browser to access Rstudio.");
 
-            match child.wait() {
-                Ok(status) => {
-                    if !status.success() {
-                        eprintln!("Error: kubectl command failed with status: {}", status);
-                        return Err(
-                            format!("kubectl command failed with status: {}", status).into()
-                        );
-                    }
-                    Ok(())
+        match child.wait() {
+            Ok(status) => {
+                if !status.success() {
+                    return Err(ThumedError::CommandFailed {
+                        cmd: "kubectl port-forward".to_string(),
+                        stderr: format!("exit status: {}", status),
+                    });
                 }
-                Err(e) => {
-                    eprintln!("Failed to execute kubectl command: {}", e);
-                    Err(e.into())
-                }
+                Ok(())
             }
-        } else {
-            Err(format!("Pod {} not found in the list", pod_name).into())
+            Err(e) => Err(ThumedError::Io(e)),
         }
     }
 
-    pub fn login_pod(&self) -> Result<(), Box<dyn Error>> {
+    pub fn login_pod(&self) -> Result<()> {
         println!("Please input the pod name you want to log in:");
         let mut pod_name = String::new();
         io::stdin().read_line(&mut pod_name)?;
         let pod_name = pod_name.trim();
-
         self.login_pod_by_name(pod_name)
     }
 
-    // Login to a pod by its name (for CLI usage)
-    pub fn login_pod_by_name(&self, pod_name: &str) -> Result<(), Box<dyn Error>> {
-        if self.pod_list.contains(&pod_name.to_string()) {
-            println!("Connecting to pod: {}...", pod_name);
-            // Use Command::status to run interactively instead of output
-            match Command::new("kubectl")
-                .args(["exec", "-it", pod_name, "--", "sh", "/cmd.sh"])
-                .status()
-            {
-                Ok(status) => {
-                    if !status.success() {
-                        eprintln!("Error: kubectl command failed with status: {}", status);
-                        return Err(
-                            format!("kubectl command failed with status: {}", status).into()
-                        );
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("Failed to execute kubectl command: {}", e);
-                    Err(e.into())
-                }
-            }
-        } else {
-            Err(format!("Pod {} not found in the list", pod_name).into())
+    pub fn login_pod_by_name(&self, pod_name: &str) -> Result<()> {
+        if !self.pod_list.contains(&pod_name.to_string()) {
+            return Err(ThumedError::PodNotFound(pod_name.to_string()));
         }
+        println!("Connecting to pod: {}...", pod_name);
+        let status = Command::new("kubectl")
+            .args(["exec", "-it", pod_name, "--", "sh", "/cmd.sh"])
+            .status()
+            .map_err(|e| ThumedError::CommandFailed {
+                cmd: "kubectl exec".to_string(),
+                stderr: e.to_string(),
+            })?;
+        if !status.success() {
+            return Err(ThumedError::CommandFailed {
+                cmd: "kubectl exec".to_string(),
+                stderr: format!("exit status: {}", status),
+            });
+        }
+        Ok(())
     }
-    pub fn uninstall_pod(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn uninstall_pod(&mut self) -> Result<()> {
         println!("Please input the pod name you want to uninstall:");
         let mut pod_name = String::new();
         io::stdin().read_line(&mut pod_name)?;
-        pod_name = pod_name.trim().to_string();
-
+        let pod_name = pod_name.trim().to_string();
         self.uninstall_pod_by_name(&pod_name)
     }
 
-    // Uninstall a pod by its name (for CLI usage)
-    pub fn uninstall_pod_by_name(&mut self, pod_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn uninstall_pod_by_name(&mut self, pod_name: &str) -> Result<()> {
         if !self.pod_list.contains(&pod_name.to_string()) {
-            eprintln!("Pod {} not found in the list.", pod_name);
-            return Err(format!("Pod {} not found in the list", pod_name).into());
+            return Err(ThumedError::PodNotFound(pod_name.to_string()));
         }
 
         let podname_split = pod_name.split('-').next().unwrap_or(pod_name);
 
-        match Command::new("helm")
+        let output = Command::new("helm")
             .args(["uninstall", podname_split])
-            .output()
-        {
-            Ok(output) => {
-                if output.status.success() {
-                    println!("Pod uninstalled successfully.");
-                    self.get_pod_list()?;
-                    Ok(())
-                } else {
-                    let error_msg = String::from_utf8_lossy(&output.stderr);
-                    eprintln!("Error uninstalling pod: {}", error_msg);
-                    Err(format!("Failed to uninstall pod: {}", error_msg).into())
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to run helm uninstall command: {}", e);
-                Err(e.into())
-            }
+            .output()?;
+
+        if output.status.success() {
+            println!("Pod uninstalled successfully.");
+            self.get_pod_list()?;
+            Ok(())
+        } else {
+            let error_msg = String::from_utf8_lossy(&output.stderr);
+            Err(ThumedError::CommandFailed {
+                cmd: "helm uninstall".to_string(),
+                stderr: error_msg.to_string(),
+            })
         }
     }
 }

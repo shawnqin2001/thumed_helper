@@ -1,27 +1,27 @@
-use crate::{constants, platform};
-use std::error::Error;
+use crate::{constants, error::{Result, ThumedError}, platform};
 use std::path::Path;
 use std::process::Command;
-// Run a command and return its output as a string
-// Returns an error if the command fails or if stdout cannot be converted to a string
-pub fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, Box<dyn Error>> {
+
+pub fn run_cmd(cmd: &str, args: &[&str]) -> Result<String> {
     let mut command = Command::new(cmd);
     command.args(args);
     let output = command.output()?;
 
     if !output.status.success() {
         let error_message = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Command '{}' failed: {}", cmd, error_message).into());
+        return Err(ThumedError::CommandFailed {
+            cmd: cmd.to_string(),
+            stderr: error_message,
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>> {
+pub fn download_file(url: &str, output_path: &Path) -> Result<()> {
     println!("Downloading from: {}", url);
 
     if platform::is_windows() {
-        // Use PowerShell on Windows
         let status = Command::new("powershell")
             .arg("-Command")
             .arg(format!(
@@ -32,27 +32,34 @@ pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>
             .status()?;
 
         if !status.success() {
-            return Err(format!("Failed to download file from {}", url).into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "powershell Invoke-WebRequest".to_string(),
+                stderr: format!("Failed to download from {}", url),
+            });
         }
     } else {
-        // Use curl on Unix-like systems
         let status = Command::new("curl")
             .args(["-L", "-o", &output_path.to_string_lossy(), url])
             .status()?;
 
         if !status.success() {
-            return Err(format!("Failed to download file from {}", url).into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "curl".to_string(),
+                stderr: format!("Failed to download from {}", url),
+            });
         }
     }
 
-    // Make the file executable on Unix-like systems
     if platform::is_unix() {
         let status = Command::new("chmod")
             .args(["+x", &output_path.to_string_lossy()])
             .status()?;
 
         if !status.success() {
-            return Err("Failed to make the file executable".into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "chmod".to_string(),
+                stderr: "Failed to make file executable".to_string(),
+            });
         }
     }
 
@@ -60,7 +67,7 @@ pub fn download_file(url: &str, output_path: &Path) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-fn get_os_and_arch() -> Result<(String, String), Box<dyn Error>> {
+fn get_os_and_arch() -> Result<(String, String)> {
     let os = if platform::is_windows() {
         "windows".to_string()
     } else if cfg!(target_os = "macos") {
@@ -68,7 +75,7 @@ fn get_os_and_arch() -> Result<(String, String), Box<dyn Error>> {
     } else if cfg!(target_os = "linux") {
         "linux".to_string()
     } else {
-        return Err("Unsupported operating system".into());
+        return Err(ThumedError::Config("Unsupported operating system".to_string()));
     };
 
     let arch = if cfg!(target_arch = "x86_64") {
@@ -76,13 +83,13 @@ fn get_os_and_arch() -> Result<(String, String), Box<dyn Error>> {
     } else if cfg!(target_arch = "aarch64") {
         "arm64".to_string()
     } else {
-        return Err("Unsupported architecture".into());
+        return Err(ThumedError::Config("Unsupported architecture".to_string()));
     };
 
     Ok((os, arch))
 }
 
-pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
+pub fn download_kubectl(bin_dir: &Path) -> Result<()> {
     let kubectl_path = platform::get_bin_path(bin_dir, "kubectl");
 
     if kubectl_path.exists() {
@@ -93,7 +100,7 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("Downloading kubectl...");
 
     let (os, arch) = get_os_and_arch()?;
-    let version = constants::KUBECTL_VERSION; // Use a stable version
+    let version = constants::KUBECTL_VERSION;
 
     let download_url = if platform::is_windows() {
         format!(
@@ -108,16 +115,11 @@ pub fn download_kubectl(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     };
 
     download_file(&download_url, &kubectl_path)?;
-    // rename kubectl.exe to kubectl on Windows
-    if platform::is_windows() {
-        let new_path = kubectl_path.with_file_name("kubectl");
-        std::fs::rename(&kubectl_path, &new_path)?;
-    }
     println!("kubectl downloaded successfully");
     Ok(())
 }
 
-pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
+pub fn download_helm(bin_dir: &Path) -> Result<()> {
     let helm_path = platform::get_bin_path(bin_dir, "helm");
 
     if helm_path.exists() {
@@ -128,21 +130,19 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("Downloading helm...");
 
     let (os, arch) = get_os_and_arch()?;
-    let version = constants::HELM_VERSION; // Use a stable version
+    let version = constants::HELM_VERSION;
 
-    // Adjust OS name to match Helm's naming convention
     let helm_os = match os.as_str() {
         "darwin" => "darwin",
         "linux" => "linux",
         "windows" => "windows",
-        _ => return Err(format!("Unsupported OS: {}", os).into()),
+        _ => return Err(ThumedError::Config(format!("Unsupported OS: {}", os))),
     };
 
-    // Adjust architecture name to match Helm's naming convention
     let helm_arch = match arch.as_str() {
         "amd64" => "amd64",
         "arm64" => "arm64",
-        _ => return Err(format!("Unsupported architecture: {}", arch).into()),
+        _ => return Err(ThumedError::Config(format!("Unsupported architecture: {}", arch))),
     };
 
     let filename = format!("helm-{}-{}-{}", version, helm_os, helm_arch);
@@ -151,7 +151,6 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     let temp_file = bin_dir.join(format!("{}.tar.gz", filename));
     download_file(&download_url, &temp_file)?;
 
-    // Extract binary from the tarball
     extract_gz_file(&temp_file, &helm_path)?;
     let extracted_dir = bin_dir.join(format!("{}-{}", helm_os, helm_arch));
     let extracted_file = extracted_dir.join(if platform::is_windows() {
@@ -163,13 +162,13 @@ pub fn download_helm(bin_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("helm downloaded successfully");
     Ok(())
 }
-fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
+
+fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<()> {
     println!("Extracting: {}", gz_path.display());
 
     let extract_dir = gz_path.parent().unwrap();
 
     if platform::is_windows() {
-        // Use PowerShell on Windows to extract .tar.gz
         let status = Command::new("powershell")
             .arg("-Command")
             .arg(format!(
@@ -180,10 +179,12 @@ fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<(), Box<dyn Err
             .status()?;
 
         if !status.success() {
-            return Err(format!("Failed to extract file {}", gz_path.display()).into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "tar".to_string(),
+                stderr: format!("Failed to extract {}", gz_path.display()),
+            });
         }
     } else {
-        // Use tar on Unix-like systems
         let status = Command::new("tar")
             .args([
                 "-xzf",
@@ -194,11 +195,13 @@ fn extract_gz_file(gz_path: &Path, output_path: &Path) -> Result<(), Box<dyn Err
             .status()?;
 
         if !status.success() {
-            return Err(format!("Failed to extract file {}", gz_path.display()).into());
+            return Err(ThumedError::CommandFailed {
+                cmd: "tar".to_string(),
+                stderr: format!("Failed to extract {}", gz_path.display()),
+            });
         }
     }
 
-    // Clean up the downloaded archive
     std::fs::remove_file(gz_path)?;
 
     println!("Extraction complete to: {}", output_path.display());

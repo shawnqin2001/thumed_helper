@@ -4,10 +4,6 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
-    /// Sets interactive mode (default)
-    #[arg(short, long)]
-    pub interactive: bool,
-
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -26,7 +22,7 @@ pub enum Commands {
         #[arg(short, long)]
         name: Option<String>,
 
-        /// CPU cores (default: 32)
+        /// CPU cores (default: 16)
         #[arg(short, long)]
         cpu: Option<u8>,
 
@@ -38,6 +34,13 @@ pub enum Commands {
     /// Login to a pod in the terminal
     LoginPod {
         /// Pod name to login to
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Forward port to access web service (RStudio)
+    ForwardPod {
+        /// Pod name to forward
         #[arg(short, long)]
         name: Option<String>,
     },

@@ -1,6 +1,5 @@
-use crate::{constants, platform, utils};
+use crate::{constants, error::ThumedError, platform, utils};
 use std::env;
-use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +9,11 @@ pub struct DirManager {
     pub bin_dir: PathBuf,
 }
 
+pub struct UserInfo {
+    pub user: String,
+    pub password: String,
+}
+
 impl DirManager {
     pub fn new(app_name: &str) -> Self {
         let home = dirs::home_dir().unwrap();
@@ -17,7 +21,7 @@ impl DirManager {
         let config_dir = config_dir.join(app_name);
         let bin_dir = dirs::data_local_dir().unwrap_or_else(|| {
             if cfg!(target_os = "windows") {
-                home.join("AppData/Roaming")
+                home.join("AppData/Local")
             } else {
                 home.join(".local/bin")
             }
@@ -30,18 +34,12 @@ impl DirManager {
     }
 }
 
-pub struct UserInfo {
-    pub user: String,
-    pub password: String,
-}
-
 impl UserInfo {
     pub fn new(user: String, password: String) -> Self {
         UserInfo { user, password }
     }
 
-    // Get the path to the config file
-    fn get_config_path(dirman: &DirManager) -> Result<PathBuf, Box<dyn Error>> {
+    fn get_config_path(dirman: &DirManager) -> crate::error::Result<PathBuf> {
         let config_dir = &dirman.config_dir;
         if !config_dir.exists() {
             std::fs::create_dir_all(config_dir)?;
@@ -49,8 +47,7 @@ impl UserInfo {
         Ok(config_dir.join("user.config"))
     }
 
-    // Read user input with provided prompt
-    fn read_input(prompt: &str) -> Result<String, Box<dyn Error>> {
+    fn read_input(prompt: &str) -> crate::error::Result<String> {
         println!("{}", prompt);
         io::stdout().flush()?;
         let mut input = String::new();
@@ -58,11 +55,10 @@ impl UserInfo {
         Ok(input.trim().to_string())
     }
 
-    // Get credentials from config file or prompt user
     fn get_credentials(
         dirman: &DirManager,
         show_current: bool,
-    ) -> Result<(String, String), Box<dyn Error>> {
+    ) -> crate::error::Result<(String, String)> {
         let config_path = Self::get_config_path(dirman)?;
 
         if config_path.exists() {
@@ -72,9 +68,10 @@ impl UserInfo {
 
             let lines: Vec<&str> = contents.lines().collect();
             if lines.len() < 2 {
-                return Err(
-                    "Config file format is invalid (should contain username and password)".into(),
-                );
+                return Err(ThumedError::Config(
+                    "Config file format is invalid (should contain username and password)"
+                        .to_string(),
+                ));
             }
 
             let user = lines[0].to_string();
@@ -82,7 +79,6 @@ impl UserInfo {
 
             if show_current {
                 println!("Current User: {}", user);
-                // Note: Printing password is generally not recommended
                 println!("Current Password: {}", password);
             }
 
@@ -92,33 +88,29 @@ impl UserInfo {
         if !show_current {
             println!("No user configuration found. Please enter credentials:");
         }
-
         let user = Self::read_input("Username: (Your full name)")?;
-        let password = Self::read_input("Password: (Default: Test1234)")?;
-
+        let mut password = Self::read_input("Password: (Default: Test1234)")?;
+        if password.is_empty() {
+            password = "Test1234".to_string();
+        }
         Ok((user, password))
     }
 
-    pub fn update_user(dirman: &DirManager) -> Result<Self, Box<dyn Error>> {
-        // Show current values before updating
+    pub fn update_user(dirman: &DirManager) -> crate::error::Result<Self> {
         let _ = Self::get_credentials(dirman, true);
-
-        // Always prompt for new credentials when updating
         let (user, password) = Self::read_input_credentials()?;
         let user_info = UserInfo::new(user, password);
         user_info.save(dirman)?;
-
         Ok(user_info)
     }
 
-    // Helper method to read username and password
-    fn read_input_credentials() -> Result<(String, String), Box<dyn Error>> {
+    fn read_input_credentials() -> crate::error::Result<(String, String)> {
         let user = Self::read_input("Username: (Your Fullname)")?;
         let password = Self::read_input("Password: (Default: Test1234)")?;
         Ok((user, password))
     }
 
-    pub fn load(dirman: &DirManager) -> Result<Self, Box<dyn Error>> {
+    pub fn load(dirman: &DirManager) -> crate::error::Result<Self> {
         let config_path = Self::get_config_path(dirman)?;
 
         if config_path.exists() {
@@ -133,7 +125,7 @@ impl UserInfo {
         }
     }
 
-    fn save(&self, dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+    fn save(&self, dirman: &DirManager) -> crate::error::Result<()> {
         let config_path = Self::get_config_path(dirman)?;
         let mut file = File::create(&config_path)?;
         writeln!(file, "{}", self.user)?;
@@ -142,32 +134,27 @@ impl UserInfo {
         Ok(())
     }
 }
-// Add Path to Environment Variable
-pub fn add_path(path: &Path) -> Result<(), Box<dyn Error>> {
+pub fn add_path(path: &Path) -> crate::error::Result<()> {
     let path_str = path.display().to_string();
     let paths = env::var("PATH")?;
+
     let mut path_vec: Vec<String> = env::split_paths(&paths)
         .map(|p| p.to_string_lossy().to_string())
         .collect();
+
     if !path_vec.contains(&path_str) {
         path_vec.insert(0, path_str);
-        let new_path = env::join_paths(path_vec)?;
-        if platform::is_windows() {
-            utils::run_cmd(
-                "setx",
-                &["path", new_path.to_string_lossy().to_string().as_str()],
-            )?;
-        } else {
-            unsafe {
-                env::set_var("PATH", new_path);
-            }
-        };
-    };
+    }
+
+    let new_path = env::join_paths(path_vec)?;
+    env::set_var("PATH", new_path);
+
     Ok(())
 }
 
-pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>> {
+pub fn ensure_tools_available(dirman: &DirManager) -> crate::error::Result<()> {
     let bin_dir = &dirman.bin_dir;
+    add_path(bin_dir)?;
     if !bin_dir.exists() {
         println!("Creating bin directory...");
         std::fs::create_dir_all(bin_dir)?;
@@ -205,14 +192,11 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
         println!("All required tools found in bin directory.");
     }
 
-    // Re-check after potential downloads
     let kubectl_exists = kubectl_path.exists();
     let helm_exists = helm_path.exists();
-    add_path(bin_dir)?;
 
     if kubectl_exists {
-        let bin_kubectl = kubectl_path.to_string_lossy().to_string();
-        match utils::run_cmd(&bin_kubectl, &["version", "--client"]) {
+        match utils::run_cmd("kubectl", &["version", "--client"]) {
             Ok(_) => println!("kubectl is working correctly"),
             Err(e) => println!("Warning: kubectl may not be working: {}", e),
         }
@@ -222,8 +206,7 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     }
 
     if helm_exists {
-        let bin_helm = helm_path.to_string_lossy().to_string();
-        match utils::run_cmd(&bin_helm, &["version"]) {
+        match utils::run_cmd("helm", &["version"]) {
             Ok(_) => println!("helm is working correctly"),
             Err(e) => println!("Warning: helm may not be working: {}", e),
         }
@@ -234,12 +217,11 @@ pub fn ensure_tools_available(dirman: &DirManager) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn init_helm() -> Result<(), Box<dyn Error>> {
-    // Check if med-helm repo already exists
+fn init_helm() -> crate::error::Result<()> {
     let helm_list = utils::run_cmd("helm", &["repo", "list"]).unwrap_or_default();
 
     if !helm_list.contains(constants::HELM_REPO_NAME) {
-        let _helm_init = utils::run_cmd(
+        utils::run_cmd(
             "helm",
             &[
                 "repo",

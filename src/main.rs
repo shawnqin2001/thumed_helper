@@ -1,18 +1,85 @@
 mod cli;
 mod constants;
 mod environment;
-// mod host_handler;
+mod error;
 mod interaction;
 mod platform;
 mod pod_handler;
 mod utils;
 
-use crate::environment::{add_path, DirManager};
-use crate::pod_handler::PodHandler;
+use crate::cli::Commands;
+use crate::environment::{DirManager, UserInfo};
+use crate::error::{Result, ThumedError};
+use crate::pod_handler::{PodConfig, PodHandler};
+use clap::Parser;
 
-fn main() {
-    let mut ph = PodHandler::new();
+fn main() -> Result<()> {
+    let cli = cli::Cli::parse();
+
     let dirman = DirManager::new("thumed_helper");
+    let mut ph = PodHandler::new();
+
+    match cli.command {
+        Some(cmd) => execute_command(cmd, &dirman, &mut ph)?,
+        None => run_interactive_mode(&dirman, &mut ph)?,
+    }
+
+    Ok(())
+}
+
+fn execute_command(cmd: Commands, dirman: &DirManager, ph: &mut PodHandler) -> Result<()> {
+    match cmd {
+        Commands::CheckEnv => {
+            environment::check_env();
+        }
+        Commands::ListPods => {
+            ph.get_pod_list()?;
+            ph.display();
+        }
+        Commands::InstallPod { name, cpu, memory } => {
+            let pod_config = if let Some(n) = name {
+                PodConfig::from_args(n, cpu, memory)
+            } else {
+                PodConfig::new()
+            };
+            pod_config.save_config_yaml(dirman)?;
+            pod_config.install_pod(dirman)?;
+        }
+        Commands::LoginPod { name } => {
+            ph.get_pod_list()?;
+            ph.display();
+            if let Some(n) = name {
+                ph.login_pod_by_name(&n)?;
+            } else {
+                ph.login_pod()?;
+            }
+        }
+        Commands::ForwardPod { name } => {
+            ph.get_pod_list()?;
+            ph.display();
+            if let Some(n) = name {
+                ph.forward_pod_by_name(&n)?;
+            } else {
+                ph.forward_pod()?;
+            }
+        }
+        Commands::UninstallPod { name } => {
+            ph.get_pod_list()?;
+            ph.display();
+            if let Some(n) = name {
+                ph.uninstall_pod_by_name(&n)?;
+            } else {
+                ph.uninstall_pod()?;
+            }
+        }
+        Commands::UpdateUser => {
+            UserInfo::update_user(dirman)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_interactive_mode(dirman: &DirManager, ph: &mut PodHandler) -> Result<()> {
     println!("Welcome to {}", constants::APP_NAME);
     println!("Current: {}", constants::APP_VERSION);
 
@@ -24,72 +91,49 @@ fn main() {
         let mut input = String::new();
         std::io::stdin()
             .read_line(&mut input)
-            .expect("Failed to read line");
+            .map_err(ThumedError::Io)?;
         if input.trim().to_lowercase() == "y" {
             environment::check_env();
         }
     }
-    let _ = add_path(bin_dir);
+    let _ = environment::add_path(bin_dir);
+
     loop {
         match interaction::get_user_action() {
             Ok(action) => match action {
                 0 => break,
                 1 => environment::check_env(),
                 2 => {
-                    if let Err(e) = ph.get_pod_list() {
-                        println!("Error getting pod list: {}", e);
-                        continue;
-                    }
+                    ph.get_pod_list()?;
                     ph.display();
                 }
                 3 => {
-                    let pod_config = pod_handler::PodConfig::new();
-                    if let Err(e) = pod_config.save_config_yaml(&dirman) {
-                        println!("Error saving pod configuration: {}", e);
-                        continue;
-                    }
-                    if let Err(e) = pod_config.install_pod(&dirman) {
-                        println!("Error installing pod: {}", e);
-                    }
+                    let pod_config = PodConfig::new();
+                    pod_config.save_config_yaml(dirman)?;
+                    pod_config.install_pod(dirman)?;
                 }
                 4 => {
-                    if let Err(e) = ph.get_pod_list() {
-                        println!("Error getting pod list: {}", e);
-                        continue;
-                    }
+                    ph.get_pod_list()?;
                     ph.display();
-                    if let Err(e) = ph.login_pod() {
-                        println!("Error logging into pod: {}", e);
-                    }
+                    ph.login_pod()?;
                 }
                 5 => {
-                    if let Err(e) = ph.get_pod_list() {
-                        println!("Error getting pod list: {}", e);
-                        continue;
-                    }
+                    ph.get_pod_list()?;
                     ph.display();
-                    if let Err(e) = ph.forward_pod() {
-                        println!("Error logging into pod: {}", e)
-                    }
+                    ph.forward_pod()?;
                 }
                 6 => {
-                    if let Err(e) = ph.get_pod_list() {
-                        println!("Error getting pod list: {}", e);
-                        continue;
-                    }
+                    ph.get_pod_list()?;
                     ph.display();
-                    if let Err(e) = ph.uninstall_pod() {
-                        println!("Error uninstalling pod: {}", e);
-                    }
+                    ph.uninstall_pod()?;
                 }
                 7 => {
-                    if let Err(e) = environment::UserInfo::update_user(&dirman) {
-                        println!("Error updating user info: {}", e);
-                    }
+                    UserInfo::update_user(dirman)?;
                 }
                 _ => println!("Invalid action"),
             },
             Err(e) => println!("Error: {}", e),
         }
     }
+    Ok(())
 }
