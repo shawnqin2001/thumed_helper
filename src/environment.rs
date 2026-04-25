@@ -332,3 +332,98 @@ pub fn check_env() {
     }
     println!("Environment check completed!");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("thumed_helper_test_{}_{}", name, nanos))
+    }
+
+    struct PathGuard {
+        original: Option<OsString>,
+    }
+
+    impl PathGuard {
+        fn new(value: &str) -> Self {
+            let original = env::var_os("PATH");
+            env::set_var("PATH", value);
+            Self { original }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            if let Some(original) = &self.original {
+                env::set_var("PATH", original);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+    }
+
+    #[test]
+    fn add_path_prepends_missing_path() {
+        let _guard = PathGuard::new("/usr/bin:/bin");
+        let new_path = Path::new("/tmp/thumed-bin");
+
+        add_path(new_path).unwrap();
+
+        let paths: Vec<PathBuf> = env::split_paths(&env::var_os("PATH").unwrap()).collect();
+        assert_eq!(paths.first().unwrap(), new_path);
+    }
+
+    #[test]
+    fn add_path_does_not_duplicate_existing_path() {
+        let _guard = PathGuard::new("/tmp/thumed-bin:/usr/bin:/bin");
+        let existing_path = Path::new("/tmp/thumed-bin");
+
+        add_path(existing_path).unwrap();
+
+        let paths: Vec<PathBuf> = env::split_paths(&env::var_os("PATH").unwrap()).collect();
+        let matches = paths.iter().filter(|path| path.as_path() == existing_path).count();
+        assert_eq!(matches, 1);
+    }
+
+    #[test]
+    fn user_info_load_reads_existing_config() {
+        let config_dir = unique_temp_dir("user_info_load");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("user.config"), "alice\nsecret\n").unwrap();
+        let dirman = DirManager {
+            config_dir,
+            bin_dir: unique_temp_dir("bin"),
+        };
+
+        let user_info = UserInfo::load(&dirman).unwrap();
+
+        assert_eq!(user_info.user, "alice");
+        assert_eq!(user_info.password, "secret");
+    }
+
+    #[test]
+    fn user_info_load_rejects_invalid_config() {
+        let config_dir = unique_temp_dir("invalid_user_info");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("user.config"), "alice\n").unwrap();
+        let dirman = DirManager {
+            config_dir,
+            bin_dir: unique_temp_dir("bin"),
+        };
+
+        let error = match UserInfo::load(&dirman) {
+            Ok(_) => panic!("expected invalid config to fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, ThumedError::Config(_)));
+        assert!(error.to_string().contains("Config file format is invalid"));
+    }
+}

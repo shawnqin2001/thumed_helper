@@ -56,3 +56,50 @@ pub enum Commands {
     UpdateUser,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_install_pod_with_all_options() {
+        let cli = Cli::parse_from([
+            "thumed_helper",
+            "install-pod",
+            "--name",
+            "pod01",
+            "--cpu",
+            "8",
+            "--memory",
+            "32",
+        ]);
+
+        match cli.command {
+            Some(Commands::InstallPod { name, cpu, memory }) => {
+                assert_eq!(name, Some("pod01".to_string()));
+                assert_eq!(cpu, Some(8));
+                assert_eq!(memory, Some(32));
+            }
+            _ => panic!("expected install-pod command"),
+        }
+    }
+
+    #[test]
+    fn parses_login_pod_name() {
+        let cli = Cli::parse_from(["thumed_helper", "login-pod", "--name", "pod01"]);
+
+        match cli.command {
+            Some(Commands::LoginPod { name }) => {
+                assert_eq!(name, Some("pod01".to_string()));
+            }
+            _ => panic!("expected login-pod command"),
+        }
+    }
+
+    #[test]
+    fn parses_no_command_as_none() {
+        let cli = Cli::parse_from(["thumed_helper"]);
+
+        assert!(cli.command.is_none());
+    }
+}

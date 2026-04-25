@@ -318,3 +318,86 @@ impl PodHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("thumed_helper_test_{}_{}", name, nanos))
+    }
+
+    #[test]
+    fn pod_config_from_args_preserves_values() {
+        let config = PodConfig::from_args("pod01".to_string(), Some(8), Some(32));
+
+        assert_eq!(config.container_name, "pod01");
+        assert_eq!(config.get_cpu(), 8);
+        assert_eq!(config.get_memory(), 32);
+    }
+
+    #[test]
+    fn pod_config_uses_defaults_when_limits_are_missing() {
+        let config = PodConfig::from_args("pod01".to_string(), None, None);
+
+        assert_eq!(config.get_cpu(), constants::DEFAULT_CPU_CORES);
+        assert_eq!(config.get_memory(), constants::DEFAULT_MEMORY_GB);
+    }
+
+    #[test]
+    fn save_config_yaml_writes_expected_values() {
+        let config_dir = unique_temp_dir("pod_yaml");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("user.config"), "alice\nsecret\n").unwrap();
+        let dirman = DirManager {
+            config_dir: config_dir.clone(),
+            bin_dir: unique_temp_dir("bin"),
+        };
+        let config = PodConfig::from_args("pod01".to_string(), Some(4), Some(24));
+
+        config.save_config_yaml(&dirman).unwrap();
+
+        let yaml = std::fs::read_to_string(config_dir.join("pod01.yaml")).unwrap();
+        assert!(yaml.contains("containerName: \"pod01\""));
+        assert!(yaml.contains("cpu: \"4\""));
+        assert!(yaml.contains("memory: \"24\""));
+        assert!(yaml.contains("username: alice"));
+        assert!(yaml.contains("password: secret"));
+        assert!(yaml.contains("- \"alice\""));
+    }
+
+    #[test]
+    fn install_pod_errors_when_config_file_is_missing() {
+        let config_dir = unique_temp_dir("missing_pod_yaml");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let dirman = DirManager {
+            config_dir,
+            bin_dir: unique_temp_dir("bin"),
+        };
+        let config = PodConfig::from_args("pod01".to_string(), None, None);
+
+        let error = config.install_pod(&dirman).unwrap_err();
+
+        assert!(matches!(error, ThumedError::Config(_)));
+        assert!(error.to_string().contains("Configuration file not found"));
+    }
+
+    #[test]
+    fn pod_actions_return_pod_not_found_for_unknown_name() {
+        let handler = PodHandler {
+            pod_list: vec!["known-pod".to_string()],
+        };
+
+        let login_error = handler.login_pod_by_name("missing-pod").unwrap_err();
+        let forward_error = handler.forward_pod_by_name("missing-pod").unwrap_err();
+
+        assert!(matches!(login_error, ThumedError::PodNotFound(name) if name == "missing-pod"));
+        assert!(matches!(forward_error, ThumedError::PodNotFound(name) if name == "missing-pod"));
+    }
+}

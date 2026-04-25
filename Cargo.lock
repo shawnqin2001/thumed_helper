@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "thumed_helper"
-version = "1.0.0"
+version = "1.0.5"
 dependencies = [
  "clap",
  "dirs",
