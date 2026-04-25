@@ -16,37 +16,56 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          # macOS Intel (x86_64)
+          - os: macos-15-intel
             target: x86_64-apple-darwin
+
+          # macOS Apple Silicon (arm64)
           - os: macos-14
             target: aarch64-apple-darwin
+
+          # Windows
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
+    runs-on: ${{ matrix.os }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rs/toolchain@v1
         with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
           targets: ${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --verbose --release --target ${{ matrix.target }}
+      - name: Show Rust version
+        run: rustc --version
 
-      - name: Prepare Package (macOS)
-        if: runner.os == 'macOS'
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: List build artifacts
+        run: |
+          echo "Build target: ${{ matrix.target }}"
+          ls -R target/${{ matrix.target }}/release
+
+      - name: Package artifacts (macOS)
+        if: startsWith(matrix.os, 'macos')
         run: |
           zip -j ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip \
             target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}
 
-      - name: Prepare Package (Windows)
-        if: runner.os == 'Windows'
+      - name: Package artifacts (Windows)
+        if: matrix.os == 'windows-latest'
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe `
             -DestinationPath ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
@@ -59,9 +78,10 @@ jobs:
 
   release:
     name: Create Release
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -70,7 +90,7 @@ jobs:
           pattern: ${{ env.PROJECT_NAME }}-*
           merge-multiple: true
 
-      - name: Create Release and Upload Assets
+      - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "artifacts/*"
