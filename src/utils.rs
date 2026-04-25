@@ -1,4 +1,8 @@
-use crate::{constants, error::{Result, ThumedError}, platform};
+use crate::{
+    constants,
+    error::{Result, ThumedError},
+    platform,
+};
 use std::path::Path;
 use std::process::Command;
 
@@ -75,7 +79,9 @@ fn get_os_and_arch() -> Result<(String, String)> {
     } else if cfg!(target_os = "linux") {
         "linux".to_string()
     } else {
-        return Err(ThumedError::Config("Unsupported operating system".to_string()));
+        return Err(ThumedError::Config(
+            "Unsupported operating system".to_string(),
+        ));
     };
 
     let arch = if cfg!(target_arch = "x86_64") {
@@ -142,7 +148,12 @@ pub fn download_helm(bin_dir: &Path) -> Result<()> {
     let helm_arch = match arch.as_str() {
         "amd64" => "amd64",
         "arm64" => "arm64",
-        _ => return Err(ThumedError::Config(format!("Unsupported architecture: {}", arch))),
+        _ => {
+            return Err(ThumedError::Config(format!(
+                "Unsupported architecture: {}",
+                arch
+            )))
+        }
     };
 
     let filename = format!("helm-{}-{}-{}", version, helm_os, helm_arch);

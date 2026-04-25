@@ -1,9 +1,8 @@
 use crate::{constants, error::ThumedError, platform, utils};
 use std::env;
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub struct DirManager {
     pub config_dir: PathBuf,
@@ -153,65 +152,77 @@ pub fn add_path(path: &Path) -> crate::error::Result<()> {
     Ok(())
 }
 
-pub fn add_user_path(path: &Path) -> crate::error::Result<()> {
+#[cfg(target_os = "windows")]
+pub fn add_user_path(path: &std::path::Path) -> crate::error::Result<()> {
     let bin_path = path.canonicalize()?.to_string_lossy().to_string();
-    if cfg!(windows) {
-        let current_path = Command::new("powershell")
-            .args([
-                "-Command",
-                "[Environment]::GetEnvironmentVariable('PATH', 'User')",
-            ])
-            .output()?;
-        let current_path_str = String::from_utf8_lossy(&current_path.stdout);
-        if !current_path_str.split(";").any(|p| p == bin_path) {
-            Command::new("powershell")
-                .args([
-                    "-Command",
-                    &format!("[Environment]::SetEnvironmentVariable('PATH', '{};'+[Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')", bin_path)
-                ])
-                .status()?;
-            println!("Added {} to user PATH (Windows)", bin_path);
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env_key = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
+
+    let current_path: String = env_key.get_value("PATH").unwrap_or_default();
+
+    if !current_path.split(';').any(|p| p == bin_path) {
+        let new_path = if current_path.is_empty() {
+            bin_path.clone()
+        } else if current_path.ends_with(';') {
+            format!("{}{}", current_path, bin_path)
         } else {
-            println!("{} already in user path (Windows)", bin_path);
-        }
-    } else {
-        // Unix system path adding
-        let home = dirs::home_dir().expect("Cannot find home directory");
-        let shell = std::env::var("SHELL").unwrap_or_default();
-        let rc_file = if shell.contains("zsh") {
-            home.join(".zshrc")
-        } else {
-            home.join(".bashrc")
+            format!("{};{}", current_path, bin_path)
         };
 
-        // Read current lines to check duplicates
-        let mut already_exists = false;
-        if rc_file.exists() {
-            let file = std::fs::File::open(&rc_file)?;
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                if line.contains(&bin_path) {
-                    already_exists = true;
-                    break;
-                }
+        env_key.set_value("PATH", &new_path)?;
+        println!("Added {} to user PATH (Windows)", bin_path);
+    } else {
+        println!("{} already in user path (Windows)", bin_path);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn add_user_path(path: &std::path::Path) -> crate::error::Result<()> {
+    let bin_path = path.canonicalize()?.to_string_lossy().to_string();
+    let home = dirs::home_dir().expect("Cannot find home directory");
+    let shell = std::env::var("SHELL").unwrap_or_default();
+
+    let rc_file = if shell.contains("zsh") {
+        home.join(".zshrc")
+    } else {
+        home.join(".bashrc")
+    };
+
+    let mut already_exists = false;
+    if rc_file.exists() {
+        let file = std::fs::File::open(&rc_file)?;
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let line = line?;
+            if line.contains(&bin_path) {
+                already_exists = true;
+                break;
             }
         }
-        if !already_exists {
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&rc_file)?;
-            writeln!(
-                file,
-                "\n# Added by THU-Med Helper\nexport PATH=\"{}:$PATH\"",
-                bin_path
-            )?;
-            println!("Added {} to PATH in {:?}", bin_path, rc_file);
-        } else {
-            println!("{} already in PATH in {:?}", bin_path, rc_file);
-        }
     }
+
+    if !already_exists {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&rc_file)?;
+        use std::io::Write;
+        writeln!(
+            file,
+            "\n# Added by THU-Med Helper\nexport PATH=\"{}:$PATH\"",
+            bin_path
+        )?;
+        println!("Added {} to PATH in {:?}", bin_path, rc_file);
+    } else {
+        println!("{} already in PATH in {:?}", bin_path, rc_file);
+    }
+
     Ok(())
 }
 
@@ -388,7 +399,10 @@ mod tests {
         add_path(existing_path).unwrap();
 
         let paths: Vec<PathBuf> = env::split_paths(&env::var_os("PATH").unwrap()).collect();
-        let matches = paths.iter().filter(|path| path.as_path() == existing_path).count();
+        let matches = paths
+            .iter()
+            .filter(|path| path.as_path() == existing_path)
+            .count();
         assert_eq!(matches, 1);
     }
 
