@@ -1,8 +1,9 @@
 use crate::{constants, error::ThumedError, platform, utils};
 use std::env;
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub struct DirManager {
     pub config_dir: PathBuf,
@@ -152,13 +153,82 @@ pub fn add_path(path: &Path) -> crate::error::Result<()> {
     Ok(())
 }
 
+pub fn add_user_path(path: &Path) -> crate::error::Result<()> {
+    let bin_path = path.canonicalize()?.to_string_lossy().to_string();
+    if cfg!(windows) {
+        let current_path = Command::new("powershell")
+            .args([
+                "-Command",
+                "[Environment]::GetEnvironmentVariable('PATH', 'User')",
+            ])
+            .output()?;
+        let current_path_str = String::from_utf8_lossy(&current_path.stdout);
+        if !current_path_str.split(";").any(|p| p == bin_path) {
+            Command::new("powershell")
+                .args([
+                    "-Command",
+                    &format!("[Environment]::SetEnvironmentVariable('PATH', '{};'+[Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')", bin_path)
+                ])
+                .status()?;
+            println!("Added {} to user PATH (Windows)", bin_path);
+        } else {
+            println!("{} already in user path (Windows)", bin_path);
+        }
+    } else {
+        // Unix system path adding
+        let home = dirs::home_dir().expect("Cannot find home directory");
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let rc_file = if shell.contains("zsh") {
+            home.join(".zshrc")
+        } else {
+            home.join(".bashrc")
+        };
+
+        // Read current lines to check duplicates
+        let mut already_exists = false;
+        if rc_file.exists() {
+            let file = std::fs::File::open(&rc_file)?;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = line?;
+                if line.contains(&bin_path) {
+                    already_exists = true;
+                    break;
+                }
+            }
+        }
+        if !already_exists {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&rc_file)?;
+            writeln!(
+                file,
+                "\n# Added by THU-Med Helper\nexport PATH=\"{}:$PATH\"",
+                bin_path
+            )?;
+            println!("Added {} to PATH in {:?}", bin_path, rc_file);
+        } else {
+            println!("{} already in PATH in {:?}", bin_path, rc_file);
+        }
+    }
+    Ok(())
+}
+
 pub fn ensure_tools_available(dirman: &DirManager) -> crate::error::Result<()> {
+    let kubectl_ok = utils::run_cmd("kubectl", &["version", "--client"]).is_ok();
+    let helm_ok = utils::run_cmd("helm", &["version"]).is_ok();
+    if kubectl_ok && helm_ok {
+        println!("Tools are ok");
+        return Ok(());
+    }
     let bin_dir = &dirman.bin_dir;
-    add_path(bin_dir)?;
     if !bin_dir.exists() {
         println!("Creating bin directory...");
         std::fs::create_dir_all(bin_dir)?;
     }
+    add_path(bin_dir)?;
+    add_user_path(bin_dir)?;
 
     let kubectl_path = platform::get_bin_path(bin_dir, "kubectl");
     let helm_path = platform::get_bin_path(bin_dir, "helm");
