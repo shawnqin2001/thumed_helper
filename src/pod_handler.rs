@@ -3,7 +3,6 @@ use crate::environment;
 use crate::environment::DirManager;
 use crate::error::{Result, ThumedError};
 use crate::utils;
-use std::fs;
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
@@ -105,76 +104,41 @@ impl PodConfig {
     fn get_memory(&self) -> u8 {
         self.memory.unwrap_or(constants::DEFAULT_MEMORY_GB)
     }
-    pub fn save_config_yaml(&self, dirman: &DirManager) -> Result<()> {
+    fn render_values_yaml(&self, dirman: &DirManager) -> Result<String> {
         let user_info = environment::UserInfo::load(dirman)?;
-        let yaml_content = format!(
-            r#"replicaCount: 1
+        let cpu = self.get_cpu().to_string();
+        let memory = self.get_memory().to_string();
 
-image:
-  repository: base.med.thu/public/r-4.3
-  pullPolicy: Always
-  tag: "v1"
-
-containerName: "{container_name}"
-
-service:
-  type: ClusterIP
-  port: 8787
-
-resources:
-  limits:
-    cpu: "{cpu}"
-    memory: "{memory}"
-
-imageCredentials:
-  registry: base.med.thu
-  username: {username}
-  password: {password}
-
-loadDataPath:
-  public:
-    - "input"
-    - "lessonPublic"
-  personal:
-    - "{username}"
-
-type: centos
-
-nfs: "Aries"
-
-transfer: false
-        "#,
-            container_name = self.container_name,
-            cpu = self.get_cpu(),
-            memory = self.get_memory(),
-            username = user_info.user,
-            password = user_info.password
-        );
-        let config_dir = &dirman.config_dir;
-        let file_path = config_dir.join(format!("{}.yaml", self.container_name));
-        let mut file = fs::File::create(&file_path)?;
-        file.write_all(yaml_content.as_bytes())?;
-        println!("Configuration saved to {}", file_path.display());
-        Ok(())
+        Ok(constants::HELM_VALUES_TEMPLATE
+            .replace("{container_name}", &self.container_name)
+            .replace("{cpu}", &cpu)
+            .replace("{memory}", &memory)
+            .replace("{username}", &user_info.user)
+            .replace("{password}", &user_info.password))
     }
+
     pub fn install_pod(&self, dirman: &DirManager) -> Result<()> {
-        let config_dir = &dirman.config_dir;
-        let file_path = config_dir.join(format!("{}.yaml", self.container_name));
-        if !file_path.exists() {
-            return Err(ThumedError::Config(format!(
-                "Configuration file not found: {}",
-                file_path.display()
-            )));
-        }
-        let output = Command::new("helm")
+        let yaml_content = self.render_values_yaml(dirman)?;
+        let mut child = Command::new("helm")
             .args([
                 "install",
                 &self.container_name,
-                "med-helm/alpha",
+                constants::HELM_CHART,
                 "-f",
-                &file_path.to_string_lossy(),
+                "-",
             ])
-            .output()?;
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        child
+            .stdin
+            .as_mut()
+            .expect("Helm stdin was not piped")
+            .write_all(yaml_content.as_bytes())?;
+
+        let output = child.wait_with_output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ThumedError::CommandFailed {
@@ -351,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn save_config_yaml_writes_expected_values() {
+    fn render_values_yaml_uses_expected_values_without_writing_file() {
         let config_dir = unique_temp_dir("pod_yaml");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("user.config"), "alice\nsecret\n").unwrap();
@@ -361,31 +325,16 @@ mod tests {
         };
         let config = PodConfig::from_args("pod01".to_string(), Some(4), Some(24));
 
-        config.save_config_yaml(&dirman).unwrap();
+        let yaml = config.render_values_yaml(&dirman).unwrap();
 
-        let yaml = std::fs::read_to_string(config_dir.join("pod01.yaml")).unwrap();
         assert!(yaml.contains("containerName: \"pod01\""));
-        assert!(yaml.contains("cpu: \"4\""));
-        assert!(yaml.contains("memory: \"24\""));
+        assert!(yaml.contains("mode: deployment"));
+        assert!(yaml.contains("resources:\n  cpu: \"4\"\n  memory: \"24\""));
+        assert!(!yaml.contains("limits:"));
         assert!(yaml.contains("username: alice"));
         assert!(yaml.contains("password: secret"));
         assert!(yaml.contains("- \"alice\""));
-    }
-
-    #[test]
-    fn install_pod_errors_when_config_file_is_missing() {
-        let config_dir = unique_temp_dir("missing_pod_yaml");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let dirman = DirManager {
-            config_dir,
-            bin_dir: unique_temp_dir("bin"),
-        };
-        let config = PodConfig::from_args("pod01".to_string(), None, None);
-
-        let error = config.install_pod(&dirman).unwrap_err();
-
-        assert!(matches!(error, ThumedError::Config(_)));
-        assert!(error.to_string().contains("Configuration file not found"));
+        assert!(!config_dir.join("pod01.yaml").exists());
     }
 
     #[test]

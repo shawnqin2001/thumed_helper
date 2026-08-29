@@ -42,7 +42,6 @@ fn execute_command(cmd: Commands, dirman: &DirManager, ph: &mut PodHandler) -> R
             } else {
                 PodConfig::new()
             };
-            pod_config.save_config_yaml(dirman)?;
             pod_config.install_pod(dirman)?;
         }
         Commands::LoginPod { name } => {
@@ -109,7 +108,6 @@ fn run_interactive_mode(dirman: &DirManager, ph: &mut PodHandler) -> Result<()> 
                 }
                 3 => {
                     let pod_config = PodConfig::new();
-                    pod_config.save_config_yaml(dirman)?;
                     pod_config.install_pod(dirman)?;
                 }
                 4 => {
