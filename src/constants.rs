@@ -9,10 +9,6 @@ pub const DEFAULT_MEMORY_GB: u8 = 50;
 pub const HELM_REPO_URL: &str = "http://166.111.153.65:7001";
 // pub const WEBSITE_DOMAIN: &str = "apps.med.thu";
 
-// Tool version
-pub const KUBECTL_VERSION: &str = "v1.28.4";
-pub const HELM_VERSION: &str = "v3.12.3";
-
 // Helm repositories and chart
 pub const HELM_REPO_NAME: &str = "med-helm";
 pub const HELM_CHART: &str = "med-helm/med";
@@ -49,7 +45,7 @@ loadDataPath:
     - "input"
     - "lessonPublic"
   personal:
-    - "{username}"
+    - {username}
 
 type: centos
 

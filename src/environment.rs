@@ -1,7 +1,9 @@
-use crate::{constants, error::ThumedError, platform, utils};
+use crate::{constants, error::ThumedError, utils};
 use std::env;
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub struct DirManager {
@@ -47,90 +49,47 @@ impl UserInfo {
         Ok(config_dir.join("user.config"))
     }
 
-    fn read_input(prompt: &str) -> crate::error::Result<String> {
-        println!("{}", prompt);
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Ok(input.trim().to_string())
-    }
-
-    fn get_credentials(
-        dirman: &DirManager,
-        show_current: bool,
-    ) -> crate::error::Result<(String, String)> {
-        let config_path = Self::get_config_path(dirman)?;
-
-        if config_path.exists() {
-            let mut file = File::open(&config_path)?;
-            let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
-
-            let lines: Vec<&str> = contents.lines().collect();
-            if lines.len() < 2 {
-                return Err(ThumedError::Config(
-                    "Config file format is invalid (should contain username and password)"
-                        .to_string(),
-                ));
-            }
-
-            let user = lines[0].to_string();
-            let password = lines[1].to_string();
-
-            if show_current {
-                println!("Current User: {}", user);
-                println!("Current Password: {}", password);
-            }
-
-            return Ok((user, password));
-        }
-
-        if !show_current {
-            println!("No user configuration found. Please enter credentials:");
-        }
-        let user = Self::read_input("Username: (Your full name)")?;
-        let mut password = Self::read_input("Password: (Default: Test1234)")?;
-        if password.is_empty() {
-            password = "Test1234".to_string();
-        }
-        Ok((user, password))
-    }
-
-    pub fn update_user(dirman: &DirManager) -> crate::error::Result<Self> {
-        let _ = Self::get_credentials(dirman, true);
-        let (user, password) = Self::read_input_credentials()?;
-        let user_info = UserInfo::new(user, password);
-        user_info.save(dirman)?;
-        Ok(user_info)
-    }
-
-    fn read_input_credentials() -> crate::error::Result<(String, String)> {
-        let user = Self::read_input("Username: (Your Fullname)")?;
-        let password = Self::read_input("Password: (Default: Test1234)")?;
-        Ok((user, password))
-    }
-
     pub fn load(dirman: &DirManager) -> crate::error::Result<Self> {
         let config_path = Self::get_config_path(dirman)?;
-
-        if config_path.exists() {
-            let (user, password) = Self::get_credentials(dirman, false)?;
-            Ok(UserInfo::new(user, password))
-        } else {
-            println!("No user configuration found. Please enter credentials:");
-            let (user, password) = Self::read_input_credentials()?;
-            let user_info = UserInfo::new(user, password);
-            user_info.save(dirman)?;
-            Ok(user_info)
+        if !config_path.exists() {
+            return Err(ThumedError::Config(
+                "No user configuration found. Select Update user information.".to_string(),
+            ));
         }
+
+        let mut contents = String::new();
+        File::open(config_path)?.read_to_string(&mut contents)?;
+        let mut lines = contents.lines();
+        let user = lines.next().unwrap_or_default().trim();
+        let password = lines.next().unwrap_or_default().trim();
+        if user.is_empty() || password.is_empty() {
+            return Err(ThumedError::Config(
+                "Config file format is invalid (username and password are required).".to_string(),
+            ));
+        }
+        Ok(UserInfo::new(user.to_string(), password.to_string()))
     }
 
-    fn save(&self, dirman: &DirManager) -> crate::error::Result<()> {
+    pub fn save(&self, dirman: &DirManager) -> crate::error::Result<()> {
+        if self.user.trim().is_empty() || self.password.trim().is_empty() {
+            return Err(ThumedError::Config(
+                "Username and password are required.".to_string(),
+            ));
+        }
         let config_path = Self::get_config_path(dirman)?;
+        #[cfg(unix)]
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&config_path)?;
+        #[cfg(not(unix))]
         let mut file = File::create(&config_path)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))?;
         writeln!(file, "{}", self.user)?;
         writeln!(file, "{}", self.password)?;
-        println!("User credentials saved successfully.");
         Ok(())
     }
 }
@@ -152,155 +111,14 @@ pub fn add_path(path: &Path) -> crate::error::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-pub fn add_user_path(path: &std::path::Path) -> crate::error::Result<()> {
-    let bin_path = path.canonicalize()?.to_string_lossy().to_string();
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env_key = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
-
-    let current_path: String = env_key.get_value("PATH").unwrap_or_default();
-
-    if !current_path.split(';').any(|p| p == bin_path) {
-        let new_path = if current_path.is_empty() {
-            bin_path.clone()
-        } else if current_path.ends_with(';') {
-            format!("{}{}", current_path, bin_path)
-        } else {
-            format!("{};{}", current_path, bin_path)
-        };
-
-        env_key.set_value("PATH", &new_path)?;
-        println!("Added {} to user PATH (Windows)", bin_path);
-    } else {
-        println!("{} already in user path (Windows)", bin_path);
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn add_user_path(path: &std::path::Path) -> crate::error::Result<()> {
-    let bin_path = path.canonicalize()?.to_string_lossy().to_string();
-    let home = dirs::home_dir().expect("Cannot find home directory");
-    let shell = std::env::var("SHELL").unwrap_or_default();
-
-    let rc_file = if shell.contains("zsh") {
-        home.join(".zshrc")
-    } else {
-        home.join(".bashrc")
-    };
-
-    let mut already_exists = false;
-    if rc_file.exists() {
-        let file = std::fs::File::open(&rc_file)?;
-        let reader = std::io::BufReader::new(file);
-        use std::io::BufRead;
-        for line in reader.lines() {
-            let line = line?;
-            if line.contains(&bin_path) {
-                already_exists = true;
-                break;
-            }
-        }
-    }
-
-    if !already_exists {
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&rc_file)?;
-        use std::io::Write;
-        writeln!(
-            file,
-            "\n# Added by THU-Med Helper\nexport PATH=\"{}:$PATH\"",
-            bin_path
-        )?;
-        println!("Added {} to PATH in {:?}", bin_path, rc_file);
-    } else {
-        println!("{} already in PATH in {:?}", bin_path, rc_file);
-    }
-
-    Ok(())
-}
-
-pub fn ensure_tools_available(dirman: &DirManager) -> crate::error::Result<()> {
-    let kubectl_ok = utils::run_cmd("kubectl", &["version", "--client"]).is_ok();
-    let helm_ok = utils::run_cmd("helm", &["version"]).is_ok();
-    if kubectl_ok && helm_ok {
-        println!("Tools are ok");
-        return Ok(());
-    }
-    let bin_dir = &dirman.bin_dir;
-    if !bin_dir.exists() {
-        println!("Creating bin directory...");
-        std::fs::create_dir_all(bin_dir)?;
-    }
-    add_path(bin_dir)?;
-    add_user_path(bin_dir)?;
-
-    let kubectl_path = platform::get_bin_path(bin_dir, "kubectl");
-    let helm_path = platform::get_bin_path(bin_dir, "helm");
-
-    let kubectl_exists = kubectl_path.exists();
-    let helm_exists = helm_path.exists();
-
-    if !kubectl_exists || !helm_exists {
-        println!("Some required tools are missing. Attempting to download:");
-
-        if !kubectl_exists {
-            match utils::download_kubectl(bin_dir) {
-                Ok(_) => println!("Successfully downloaded kubectl"),
-                Err(e) => println!(
-                    "Failed to download kubectl: {}. Please download it manually.",
-                    e
-                ),
-            }
-        }
-
-        if !helm_exists {
-            match utils::download_helm(bin_dir) {
-                Ok(_) => println!("Successfully downloaded helm"),
-                Err(e) => println!(
-                    "Failed to download helm: {}. Please download it manually.",
-                    e
-                ),
-            }
-        }
-    } else {
-        println!("All required tools found in bin directory.");
-    }
-
-    let kubectl_exists = kubectl_path.exists();
-    let helm_exists = helm_path.exists();
-
-    if kubectl_exists {
-        match utils::run_cmd("kubectl", &["version", "--client"]) {
-            Ok(_) => println!("kubectl is working correctly"),
-            Err(e) => println!("Warning: kubectl may not be working: {}", e),
-        }
-    } else {
-        println!("kubectl is still missing. Please download it manually from:");
-        println!("kubectl: kubernetes.io/docs/tasks/tools/");
-    }
-
-    if helm_exists {
-        match utils::run_cmd("helm", &["version"]) {
-            Ok(_) => println!("helm is working correctly"),
-            Err(e) => println!("Warning: helm may not be working: {}", e),
-        }
-    } else {
-        println!("helm is still missing. Please download it manually from:");
-        println!("helm: https://github.com/helm/helm/releases");
-    }
+pub fn ensure_tools_available(_dirman: &DirManager) -> crate::error::Result<()> {
+    utils::run_cmd("kubectl", &["version", "--client"])?;
+    utils::run_cmd("helm", &["version"])?;
     Ok(())
 }
 
 fn init_helm() -> crate::error::Result<()> {
-    let helm_list = utils::run_cmd("helm", &["repo", "list"]).unwrap_or_default();
-
+    let helm_list = utils::run_cmd("helm", &["repo", "list"])?;
     if !helm_list.contains(constants::HELM_REPO_NAME) {
         utils::run_cmd(
             "helm",
@@ -311,44 +129,25 @@ fn init_helm() -> crate::error::Result<()> {
                 constants::HELM_REPO_URL,
             ],
         )?;
-        println!("Added {} repository", constants::HELM_REPO_NAME);
-    } else {
-        println!("{} repository already exists", constants::HELM_REPO_NAME);
     }
-    let helm_update = utils::run_cmd("helm", &["repo", "update"])?;
-    println!("{}", helm_update);
+    utils::run_cmd("helm", &["repo", "update"])?;
     Ok(())
 }
 
-pub fn check_env() {
-    println!("Checking environment...");
-    let dir_manager = DirManager::new("thumed_helper");
-    match UserInfo::load(&dir_manager) {
-        Ok(user_info) => {
-            println!("User: {}", user_info.user);
-            println!("Password: {}", user_info.password);
-        }
-        Err(e) => {
-            println! {"Failed to load user information:\n {}", e};
-            return;
-        }
-    }
-    match ensure_tools_available(&dir_manager) {
-        Ok(_) => println!("Tool directory setup complete"),
-        Err(e) => println!("{}", e),
-    }
-    match init_helm() {
-        Ok(_) => println!("Helm initialized successfully"),
-        Err(e) => println!("{}", e),
-    }
-    println!("Environment check completed!");
+pub fn check_env(dirman: &DirManager) -> crate::error::Result<()> {
+    UserInfo::load(dirman)?;
+    ensure_tools_available(dirman)?;
+    init_helm()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static PATH_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -382,6 +181,7 @@ mod tests {
 
     #[test]
     fn add_path_prepends_missing_path() {
+        let _lock = PATH_LOCK.lock().unwrap();
         let _guard = PathGuard::new("/usr/bin:/bin");
         let new_path = Path::new("/tmp/thumed-bin");
 
@@ -393,6 +193,7 @@ mod tests {
 
     #[test]
     fn add_path_does_not_duplicate_existing_path() {
+        let _lock = PATH_LOCK.lock().unwrap();
         let _guard = PathGuard::new("/tmp/thumed-bin:/usr/bin:/bin");
         let existing_path = Path::new("/tmp/thumed-bin");
 

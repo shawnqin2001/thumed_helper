@@ -3,7 +3,7 @@ use crate::environment;
 use crate::environment::DirManager;
 use crate::error::{Result, ThumedError};
 use crate::utils;
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[derive(Debug)]
@@ -14,88 +14,23 @@ pub struct PodConfig {
 }
 
 impl PodConfig {
-    /// Create a new PodConfig interactively by prompting the user
-    pub fn new() -> Self {
-        let mut container_name = String::new();
-        loop {
-            container_name.clear();
-            println!("Please input the pod's name (only lowercase letters and numbers allowed):");
-            io::stdin()
-                .read_line(&mut container_name)
-                .expect("Failed to read line");
-            container_name = container_name.trim().to_string();
-            if container_name
+    pub fn from_values(container_name: &str, cpu: &str, memory: &str) -> Result<Self> {
+        let container_name = container_name.trim();
+        if container_name.is_empty()
+            || !container_name
                 .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-                && !container_name.is_empty()
-            {
-                break;
-            } else {
-                println!(
-                    "Invalid input. Please enter a valid name: only lowercase letters and numbers are allowed."
-                );
-            }
+                .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        {
+            return Err(ThumedError::Config(
+                "Pod name must contain only lowercase letters and numbers.".to_string(),
+            ));
         }
-        let cpu = Self::prompt_cpu();
-        let memory = Self::prompt_memory();
-        PodConfig {
-            container_name,
-            cpu,
-            memory,
-        }
-    }
 
-    /// Create a PodConfig from CLI arguments (non-interactive)
-    pub fn from_args(name: String, cpu: Option<u8>, memory: Option<u8>) -> Self {
-        PodConfig {
-            container_name: name,
-            cpu,
-            memory,
-        }
-    }
-
-    fn prompt_cpu() -> Option<u8> {
-        let mut cpu = String::new();
-        println!(
-            "Please input the CPU limit (in cores, default: {}):",
-            constants::DEFAULT_CPU_CORES
-        );
-        io::stdin()
-            .read_line(&mut cpu)
-            .expect("Failed to read line");
-        if cpu.trim().is_empty() {
-            None
-        } else {
-            match cpu.trim().parse::<u8>() {
-                Ok(cpu) => Some(cpu),
-                Err(_) => {
-                    println!("Invalid input. Using default.");
-                    None
-                }
-            }
-        }
-    }
-
-    fn prompt_memory() -> Option<u8> {
-        let mut memory = String::new();
-        println!(
-            "Please input the memory limit (in GB, default: {}):",
-            constants::DEFAULT_MEMORY_GB
-        );
-        io::stdin()
-            .read_line(&mut memory)
-            .expect("Failed to read line");
-        if memory.trim().is_empty() {
-            None
-        } else {
-            match memory.trim().parse::<u8>() {
-                Ok(memory) => Some(memory),
-                Err(_) => {
-                    println!("Invalid input. Using default.");
-                    None
-                }
-            }
-        }
+        Ok(Self {
+            container_name: container_name.to_string(),
+            cpu: parse_limit(cpu, "CPU cores")?,
+            memory: parse_limit(memory, "Memory GB")?,
+        })
     }
 
     fn get_cpu(&self) -> u8 {
@@ -113,8 +48,8 @@ impl PodConfig {
             .replace("{container_name}", &self.container_name)
             .replace("{cpu}", &cpu)
             .replace("{memory}", &memory)
-            .replace("{username}", &user_info.user)
-            .replace("{password}", &user_info.password))
+            .replace("{username}", &yaml_scalar(&user_info.user))
+            .replace("{password}", &yaml_scalar(&user_info.password)))
     }
 
     pub fn install_pod(&self, dirman: &DirManager) -> Result<()> {
@@ -146,9 +81,46 @@ impl PodConfig {
                 stderr: stderr.to_string(),
             });
         }
-        println!("Pod installed successfully.");
         Ok(())
     }
+}
+
+fn yaml_scalar(value: &str) -> String {
+    let mut escaped = String::new();
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    format!("\"{}\"", escaped)
+}
+
+fn parse_limit(value: &str, label: &str) -> Result<Option<u8>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let value = value.parse::<u8>().map_err(|_| {
+        ThumedError::Config(format!(
+            "{} must be a whole number between 1 and 255.",
+            label
+        ))
+    })?;
+    if value == 0 {
+        return Err(ThumedError::Config(format!(
+            "{} must be a whole number between 1 and 255.",
+            label
+        )));
+    }
+    Ok(Some(value))
 }
 
 pub struct PodHandler {
@@ -175,21 +147,6 @@ impl PodHandler {
         Ok(())
     }
 
-    pub fn display(&self) {
-        println!("Pods:");
-        for pod in &self.pod_list {
-            println!("Pod ID: {}", pod);
-        }
-    }
-
-    pub fn forward_pod(&self) -> Result<()> {
-        println!("Select the pod name to access the web service:");
-        let mut pod_name = String::new();
-        io::stdin().read_line(&mut pod_name)?;
-        let pod_name = pod_name.trim();
-        self.forward_pod_by_name(pod_name)
-    }
-
     pub fn forward_pod_by_name(&self, pod_name: &str) -> Result<()> {
         if !self.pod_list.contains(&pod_name.to_string()) {
             return Err(ThumedError::PodNotFound(pod_name.to_string()));
@@ -198,8 +155,8 @@ impl PodHandler {
         let mut child = Command::new("kubectl")
             .args(["port-forward", pod_name, "8787:8787"])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| ThumedError::CommandFailed {
                 cmd: "kubectl port-forward".to_string(),
@@ -222,14 +179,6 @@ impl PodHandler {
         }
     }
 
-    pub fn login_pod(&self) -> Result<()> {
-        println!("Please input the pod name you want to log in:");
-        let mut pod_name = String::new();
-        io::stdin().read_line(&mut pod_name)?;
-        let pod_name = pod_name.trim();
-        self.login_pod_by_name(pod_name)
-    }
-
     pub fn login_pod_by_name(&self, pod_name: &str) -> Result<()> {
         if !self.pod_list.contains(&pod_name.to_string()) {
             return Err(ThumedError::PodNotFound(pod_name.to_string()));
@@ -250,27 +199,41 @@ impl PodHandler {
         }
         Ok(())
     }
-    pub fn uninstall_pod(&mut self) -> Result<()> {
-        println!("Please input the pod name you want to uninstall:");
-        let mut pod_name = String::new();
-        io::stdin().read_line(&mut pod_name)?;
-        let pod_name = pod_name.trim().to_string();
-        self.uninstall_pod_by_name(&pod_name)
-    }
-
-    pub fn uninstall_pod_by_name(&mut self, pod_name: &str) -> Result<()> {
-        if !self.pod_list.contains(&pod_name.to_string()) {
+    pub fn release_for_pod(&self, pod_name: &str) -> Result<String> {
+        if !self.pod_list.iter().any(|pod| pod == pod_name) {
             return Err(ThumedError::PodNotFound(pod_name.to_string()));
         }
+        let release = utils::run_cmd(
+            "kubectl",
+            &[
+                "get",
+                "pod",
+                pod_name,
+                "-o",
+                "jsonpath={.metadata.labels.app\\.kubernetes\\.io/instance}",
+            ],
+        )?;
+        let release = release.trim();
+        if release.is_empty() {
+            return Err(ThumedError::Config(format!(
+                "Pod '{}' has no Helm release label.",
+                pod_name
+            )));
+        }
+        utils::run_cmd("helm", &["status", release])?;
+        Ok(release.to_string())
+    }
 
-        let podname_split = pod_name.split('-').next().unwrap_or(pod_name);
+    pub fn uninstall_pod_release(&mut self, pod_name: &str, release: &str) -> Result<()> {
+        if self.release_for_pod(pod_name)? != release {
+            return Err(ThumedError::Config(
+                "Pod Helm release changed; select pod again before uninstalling.".to_string(),
+            ));
+        }
 
-        let output = Command::new("helm")
-            .args(["uninstall", podname_split])
-            .output()?;
+        let output = Command::new("helm").args(["uninstall", release]).output()?;
 
         if output.status.success() {
-            println!("Pod uninstalled successfully.");
             self.get_pod_list()?;
             Ok(())
         } else {
@@ -298,8 +261,12 @@ mod tests {
     }
 
     #[test]
-    fn pod_config_from_args_preserves_values() {
-        let config = PodConfig::from_args("pod01".to_string(), Some(8), Some(32));
+    fn pod_config_preserves_values() {
+        let config = PodConfig {
+            container_name: "pod01".to_string(),
+            cpu: Some(8),
+            memory: Some(32),
+        };
 
         assert_eq!(config.container_name, "pod01");
         assert_eq!(config.get_cpu(), 8);
@@ -307,8 +274,19 @@ mod tests {
     }
 
     #[test]
+    fn pod_config_rejects_invalid_limits() {
+        assert!(PodConfig::from_values("pod01", "0", "4").is_err());
+        assert!(PodConfig::from_values("pod01", "2", "invalid").is_err());
+        assert!(PodConfig::from_values("Pod01", "2", "4").is_err());
+    }
+
+    #[test]
     fn pod_config_uses_defaults_when_limits_are_missing() {
-        let config = PodConfig::from_args("pod01".to_string(), None, None);
+        let config = PodConfig {
+            container_name: "pod01".to_string(),
+            cpu: None,
+            memory: None,
+        };
 
         assert_eq!(config.get_cpu(), constants::DEFAULT_CPU_CORES);
         assert_eq!(config.get_memory(), constants::DEFAULT_MEMORY_GB);
@@ -323,7 +301,11 @@ mod tests {
             config_dir: config_dir.clone(),
             bin_dir: unique_temp_dir("bin"),
         };
-        let config = PodConfig::from_args("pod01".to_string(), Some(4), Some(24));
+        let config = PodConfig {
+            container_name: "pod01".to_string(),
+            cpu: Some(4),
+            memory: Some(24),
+        };
 
         let yaml = config.render_values_yaml(&dirman).unwrap();
 
@@ -331,10 +313,15 @@ mod tests {
         assert!(yaml.contains("mode: deployment"));
         assert!(yaml.contains("resources:\n  cpu: \"4\"\n  memory: \"24\""));
         assert!(!yaml.contains("limits:"));
-        assert!(yaml.contains("username: alice"));
-        assert!(yaml.contains("password: secret"));
+        assert!(yaml.contains("username: \"alice\""));
+        assert!(yaml.contains("password: \"secret\""));
         assert!(yaml.contains("- \"alice\""));
         assert!(!config_dir.join("pod01.yaml").exists());
+    }
+
+    #[test]
+    fn yaml_scalar_escapes_control_and_yaml_characters() {
+        assert_eq!(yaml_scalar("#\\\"\n"), "\"#\\\\\\\"\\n\"");
     }
 
     #[test]
