@@ -1,4 +1,4 @@
-# THU Med cluster helper / 清华医学院集群助手
+# 清华医学院集群助手 / THU Med cluster helper 
 
 Terminal UI for creating, entering and removing your RStudio pod on the THU Med
 computational cluster. Works on macOS, Linux and Windows.
@@ -7,7 +7,7 @@ computational cluster. Works on macOS, Linux and Windows.
 （Windows 为 `%USERPROFILE%\.kube\config`），也支持 `KUBECONFIG` 路径列表。
 程序会自动检查环境，安装缺少的 kubectl、Helm，并配置 Helm 仓库。
 
-## Usage / 使用
+## 使用 / Usage
 
 Run `thumed_helper`, then:
 
@@ -55,12 +55,6 @@ Helm 3，使用 HTTPS、SHA-256 校验及运行验证后安装到应用配置目
 表单预填当前值，`Delete` 清空当前字段；保存后用于后续创建 Pod，并在重查报告中显示。
 此操作只更改本地应用登录信息，不更改 kubeconfig 身份或集群中的实际密码。
 
-授课版报告及表单会**明文显示账号密码**，请勿公开共享包含凭据的截图。kubeconfig
-私钥、证书内容和 token 不会显示。修改值保存在应用配置目录的 `lecture-user.config`
-中，Unix 文件权限为 `0600`，Windows 使用用户目录 ACL；采用临时文件完整写入后替换，
-避免保存失败破坏旧内容。保留一份当前上下文的覆盖配置，绑定 context、集群地址和
-config 用户名；切换到其他身份时恢复其 config 用户名和默认密码，避免误用旧账号。
-旧的 `user.config` 不读取，也不自动删除。
 
 Place the administrator-provided config at the displayed path. Setup automatically
 installs missing tools and shows progress before each operation. Completed checks
@@ -69,38 +63,4 @@ Use Update user information (or `u` in the report) to save a context-bound overr
 Defaults remain the active config username and `Test1234`. Private keys and tokens
 are never selected for display; local credential edits do not change cluster passwords.
 
-### 创建时等待结果 / Wait during creation
 
-提交创建表单后，程序同步执行 Helm 安装并等待本次 release 的 Pod 进入
-`Running`，最长等待约 30 秒。创建期间显示等待提示，暂不接受按键。
-没有后台监控线程，也不会在返回菜单后继续自动检查。
-
-- 成功：自动返回主菜单，显示“已确认 Running”并更新 Pod 列表。
-- 启动失败：显示 Pod 名称、失败原因和卸载建议，按 `Enter`/`Esc` 返回菜单。
-  卸载仍需单独确认，不会自动删除。
-- 超时或查询失败：单独显示提示，不会误报为 Pod 已失败。
-
-`Running` 不是 RStudio 应用健康检查，也不代表后续不会发生故障。
-
-Submitting the form installs the Helm release and synchronously waits for its
-pods to reach Running, for up to approximately 30 seconds. Input is temporarily
-disabled while waiting. Success returns to the menu automatically. Startup
-failures, timeouts and query errors remain visible until `Enter`/`Esc` is pressed.
-No background monitor continues after creation, and no pod is deleted automatically.
-
-App-managed tools and the initialization marker live in the OS config directory:
-`%LOCALAPPDATA%\thumed_helper`, `~/Library/Application Support/thumed_helper`, or
-`~/.config/thumed_helper` (honors `XDG_CONFIG_HOME`).
-
-## Layout / 代码结构
-
-| File | Purpose |
-| --- | --- |
-| `src/tui.rs` | screens, key handling, rendering |
-| `src/i18n.rs` | 中文/EN string table, error translation |
-| `src/environment.rs` | config directory, credentials, environment checks |
-| `src/pod_handler.rs` | kubectl / helm calls |
-| `src/tools.rs` | verified, per-user kubectl / Helm installation |
-| `src/utils.rs` | command runner and managed tool resolution |
-| `src/constants.rs` | defaults, Helm repo, values template |
-| `src/error.rs` | error and validation kinds |
