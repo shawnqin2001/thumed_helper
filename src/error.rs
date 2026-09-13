@@ -29,6 +29,14 @@ pub enum ThumedError {
         stderr: String,
     },
     PodNotFound(String),
+    PodStartupFailed {
+        release: String,
+        detail: String,
+    },
+    PodStartupTimeout {
+        seconds: u64,
+        detail: String,
+    },
     Invalid(Invalid),
 }
 
@@ -62,6 +70,20 @@ impl fmt::Display for ThumedError {
                 write!(f, "Command '{}' failed: {}", cmd, stderr.trim())
             }
             Self::PodNotFound(name) => write!(f, "Pod '{}' not found", name),
+            Self::PodStartupFailed { release, detail } => {
+                write!(
+                    f,
+                    "Pod startup failed for release '{}': {}",
+                    release, detail
+                )
+            }
+            Self::PodStartupTimeout { seconds, detail } => {
+                write!(
+                    f,
+                    "Pod Running was not confirmed within {} seconds: {}",
+                    seconds, detail
+                )
+            }
             Self::Invalid(kind) => write!(f, "{}", kind.as_str()),
         }
     }

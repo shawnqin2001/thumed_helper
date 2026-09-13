@@ -60,6 +60,10 @@ pub struct Strings {
     pub panel_forward: &'static str,
     pub panel_initialize: &'static str,
     pub initialize_hint: &'static str,
+    pub panel_install_failed: &'static str,
+    pub pod_waiting: &'static str,
+    pub pod_failed: &'static str,
+    pub pod_timeout: &'static str,
     pub no_pods_loaded: &'static str,
     pub and_more: &'static str,
     pub form_hint: &'static str,
@@ -77,6 +81,7 @@ pub struct Strings {
     pub footer_forward: &'static str,
     pub footer_initialize: &'static str,
     pub footer_install_wait: &'static str,
+    pub footer_install_result: &'static str,
     pub check_credentials: &'static str,
     pub check_kubeconfig: &'static str,
     pub check_kubectl: &'static str,
@@ -131,7 +136,7 @@ pub const ZH: Strings = Strings {
         "检查环境",
     ],
     menu_details: [
-        "填写配置并用 Helm 创建 Pod。",
+        "填写配置并用 Helm 创建 Pod，同步等待 Running 后返回菜单。",
         "选择一个 Pod，打开其命令行。",
         "选择一个 Pod，转发 8787 端口到本机。",
         "选择一个 Pod，确认后删除对应的 Helm release。",
@@ -163,6 +168,10 @@ pub const ZH: Strings = Strings {
     panel_forward: "端口转发中",
     panel_initialize: "环境初始化",
     initialize_hint: "请将 config 文件放到以下位置：",
+    panel_install_failed: "创建未完成",
+    pod_waiting: "Helm 安装完成，正在等待 Pod 进入 Running（最多 30 秒）……",
+    pod_failed: "Pod 启动失败。请返回菜单选择“卸载 Pod”，确认删除后重建。若无 Pod 可选，可手动卸载对应 release：helm uninstall {}。不会自动删除。",
+    pod_timeout: "等待 {} 秒仍未确认 Running，不代表 Pod 已失败。请检查调度或镜像下载；若确认失败，请从“卸载 Pod”删除后重建。",
     no_pods_loaded: "暂无 Pod。",
     and_more: "……还有 {} 个",
     form_hint: "填写后按 Enter 提交。",
@@ -180,6 +189,7 @@ pub const ZH: Strings = Strings {
     footer_forward: "Esc 或 q 停止转发   F2 中文/EN",
     footer_initialize: "Esc 返回   F2 中文/EN",
     footer_install_wait: "正在创建，请等待结果（暂不接受按键）。",
+    footer_install_result: "Enter/Esc 返回菜单   F2 中文/EN",
     check_credentials: "账号与证书",
     check_kubeconfig: "kubeconfig",
     check_kubectl: "kubectl",
@@ -202,7 +212,7 @@ pub const ZH: Strings = Strings {
     status_forward_failed: "端口转发中断：{}",
     status_pod_range: "Pod 编号需在 1 到 {} 之间。",
     status_installing: "正在创建 Pod，请稍候……",
-    status_installed: "Pod 创建成功。",
+    status_installed: "Pod 创建成功，已确认 Running。",
     status_user_saved: "用户信息已保存，可重新检查环境查看详情。",
     status_uninstalled: "Pod {} 的 release {} 已卸载。",
     status_uninstall_cancelled: "已取消卸载。",
@@ -212,8 +222,7 @@ pub const ZH: Strings = Strings {
     err_command_failed: "命令 {} 执行失败：{}",
     err_pod_not_found: "找不到 Pod {}。",
     invalid_kube_user: "config 当前 context 中没有有效用户名，请检查配置。",
-    invalid_saved_credentials:
-        "账号或密码格式无效，请通过“更新用户信息”重新保存；密码不能为空或含控制字符。",
+    invalid_saved_credentials: "账号或密码格式无效，请通过“更新用户信息”重新保存；密码不能为空或含控制字符。",
     setup_prerequisite: "前置检查未通过，本项已跳过。",
     invalid_platform: "自动安装支持 macOS、Linux、Windows 的 x86_64/arm64 平台。",
     invalid_download: "下载文件或版本信息校验失败，未安装，请重试。",
@@ -235,7 +244,7 @@ pub const EN: Strings = Strings {
         "Check environment",
     ],
     menu_details: [
-        "Create a pod with Helm.",
+        "Create a pod with Helm and wait for Running before returning to the menu.",
         "Choose a pod and open its shell.",
         "Choose a pod and forward port 8787 to this machine.",
         "Choose a pod and remove its Helm release after confirmation.",
@@ -267,6 +276,10 @@ pub const EN: Strings = Strings {
     panel_forward: "Port forwarding",
     panel_initialize: "Environment setup",
     initialize_hint: "Place your config file here:",
+    panel_install_failed: "Creation incomplete",
+    pod_waiting: "Helm installation finished. Waiting for Running (up to 30 seconds)...",
+    pod_failed: "Pod startup failed. Return to Uninstall pod, confirm removal, then create it again. If no pod is listed, manually remove the release: helm uninstall {}. Nothing is deleted automatically.",
+    pod_timeout: "Running was not confirmed within {} seconds; this does not prove failure. Check scheduling or image downloads. If startup has failed, use Uninstall pod before recreating it.",
     no_pods_loaded: "No pods loaded.",
     and_more: "... and {} more",
     form_hint: "Fill in the fields, then press Enter.",
@@ -284,6 +297,7 @@ pub const EN: Strings = Strings {
     footer_forward: "Esc or q stops forwarding   F2 中文/EN",
     footer_initialize: "Esc back   F2 中文/EN",
     footer_install_wait: "Creating pod. Please wait for the result (keys are temporarily disabled).",
+    footer_install_result: "Enter/Esc back to menu   F2 中文/EN",
     check_credentials: "User and certificates",
     check_kubeconfig: "kubeconfig",
     check_kubectl: "kubectl",
@@ -306,7 +320,7 @@ pub const EN: Strings = Strings {
     status_forward_failed: "Port forwarding stopped: {}",
     status_pod_range: "Pod number must be between 1 and {}.",
     status_installing: "Installing pod, please wait...",
-    status_installed: "Pod installed successfully.",
+    status_installed: "Pod installed and confirmed Running.",
     status_user_saved: "User information saved. Recheck the environment to view details.",
     status_uninstalled: "Pod {} - release {} uninstalled.",
     status_uninstall_cancelled: "Uninstall cancelled.",
@@ -377,6 +391,16 @@ pub fn error_text(error: &ThumedError, lang: Lang) -> String {
             fill(t.err_command_failed, &[cmd, stderr.trim()])
         }
         ThumedError::PodNotFound(name) => fill(t.err_pod_not_found, &[name]),
+        ThumedError::PodStartupFailed { release, detail } => {
+            format!("{}\n{}", fill(t.pod_failed, &[release]), detail)
+        }
+        ThumedError::PodStartupTimeout { seconds, detail } => {
+            format!(
+                "{}\n{}",
+                fill(t.pod_timeout, &[&seconds.to_string()]),
+                detail
+            )
+        }
         ThumedError::Invalid(kind) => invalid_text(*kind, lang).to_string(),
     }
 }

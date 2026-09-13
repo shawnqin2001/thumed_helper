@@ -2,7 +2,7 @@ use crate::constants;
 use crate::environment::{self, CheckDetail, CheckItem, CheckResult, UserInfo};
 use crate::error::{Invalid, Result, ThumedError};
 use crate::i18n::{check_name, error_text, fill, setup_step_name, Lang};
-use crate::pod_handler::{PodConfig, PodHandler};
+use crate::pod_handler::{wait_for_pod_running, PodConfig, PodHandler};
 use crate::tools::SetupStep;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -66,6 +66,7 @@ enum Screen {
     Initialize,
     Menu,
     Report(Vec<CheckResult>),
+    InstallFailed { release: String, error: ThumedError },
     PodPicker(PodAction),
     Form(FormKind),
     ConfirmUninstall { pod_name: String, release: String },
@@ -80,6 +81,7 @@ enum StatusKey {
     Loading,
     EnvDone,
     EnvIncomplete,
+    WaitingForPod,
     NoPods,
     LoginEnded,
     ForwardStarted,
@@ -99,6 +101,7 @@ impl StatusKey {
             Self::Loading => t.status_loading,
             Self::EnvDone => t.status_env_done,
             Self::EnvIncomplete => t.status_env_incomplete,
+            Self::WaitingForPod => t.pod_waiting,
             Self::NoPods => t.status_no_pods,
             Self::LoginEnded => t.status_login_ended,
             Self::ForwardStarted => t.status_forward_started,
@@ -353,6 +356,12 @@ fn handle_key(
             }
             Ok(())
         }
+        Screen::InstallFailed { .. } => {
+            if matches!(key, KeyCode::Enter | KeyCode::Esc) {
+                app.screen = Screen::Menu;
+            }
+            Ok(())
+        }
         Screen::PodPicker(action) => handle_pod_picker_key(app, terminal, pod_handler, action, key),
         Screen::Form(kind) => handle_form_key(app, terminal, pod_handler, kind, key),
         Screen::ConfirmUninstall { .. } => handle_uninstall_confirmation(app, pod_handler, key),
@@ -426,6 +435,34 @@ fn check_environment(
         let _ = event::read()?;
     }
     Ok(())
+}
+
+fn finish_installation(
+    app: &mut App,
+    pod_handler: &mut PodHandler,
+    release: String,
+    result: Result<Vec<String>>,
+) {
+    app.form_values.clear();
+    match result {
+        Ok(names) => {
+            pod_handler.pod_list.extend(names);
+            pod_handler.pod_list.sort();
+            pod_handler.pod_list.dedup();
+            app.selected = 0;
+            app.screen = Screen::Menu;
+            app.set_status(StatusKey::Installed);
+        }
+        Err(error) => {
+            app.selected = if matches!(error, ThumedError::PodStartupFailed { .. }) {
+                3
+            } else {
+                0
+            };
+            app.set_error(&error);
+            app.screen = Screen::InstallFailed { release, error };
+        }
+    }
 }
 
 fn open_pod_picker(app: &mut App, pod_handler: &mut PodHandler, action: PodAction) {
@@ -566,10 +603,25 @@ fn submit_form(
     )?;
     app.set_status(StatusKey::Installing);
     terminal.draw(|frame| draw_ui(frame, app, pod_handler))?;
-    pod_config.install_pod()?;
-    app.form_values.clear();
-    app.screen = Screen::Menu;
-    app.set_status(StatusKey::Installed);
+    let result = match pod_config.install_pod() {
+        Ok(()) => {
+            app.set_status(StatusKey::WaitingForPod);
+            terminal.draw(|frame| draw_ui(frame, app, pod_handler))?;
+            wait_for_pod_running(pod_config.release_name())
+        }
+        Err(error) => Err(error),
+    };
+    // Discard keys typed during the blocking operation, so they cannot
+    // accidentally submit another form or dismiss a failure message.
+    while event::poll(Duration::ZERO)? {
+        let _ = event::read()?;
+    }
+    finish_installation(
+        app,
+        pod_handler,
+        pod_config.release_name().to_string(),
+        result,
+    );
     Ok(())
 }
 
@@ -627,6 +679,9 @@ fn draw_ui(frame: &mut Frame, app: &App, pod_handler: &PodHandler) {
     match &app.screen {
         Screen::Initialize => draw_initialize(frame, layout[1], app),
         Screen::Menu => draw_menu(frame, layout[1], app, pod_handler),
+        Screen::InstallFailed { release, error } => {
+            draw_install_failure(frame, layout[1], app, release, error)
+        }
         Screen::Report(report) => draw_report(frame, layout[1], app, report, None),
         Screen::PodPicker(action) => draw_pod_picker(frame, layout[1], app, pod_handler, *action),
         Screen::Form(kind) => draw_form(frame, layout[1], app, *kind),
@@ -639,7 +694,13 @@ fn draw_ui(frame: &mut Frame, app: &App, pod_handler: &PodHandler) {
     let t = app.lang.t();
     let footer = match app.screen {
         Screen::Initialize => t.footer_initialize,
-        Screen::Form(FormKind::Install) if matches!(app.status_key, StatusKey::Installing) => {
+        Screen::InstallFailed { .. } => t.footer_install_result,
+        Screen::Form(FormKind::Install)
+            if matches!(
+                app.status_key,
+                StatusKey::Installing | StatusKey::WaitingForPod
+            ) =>
+        {
             t.footer_install_wait
         }
         Screen::Menu => t.footer_menu,
@@ -673,6 +734,36 @@ fn draw_initialize(frame: &mut Frame, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .title(t.panel_initialize)
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn draw_install_failure(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    release: &str,
+    error: &ThumedError,
+) {
+    let t = app.lang.t();
+    let message = error_text(error, app.lang);
+    let mut lines = vec![
+        Line::from(fill(t.uninstall_release, &[release])),
+        Line::from(""),
+    ];
+    lines.extend(
+        message
+            .lines()
+            .map(|line| Line::styled(line, Style::default().fg(Color::Red))),
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(t.panel_install_failed)
                     .borders(Borders::ALL),
             )
             .wrap(Wrap { trim: true }),
@@ -890,14 +981,17 @@ fn draw_pod_picker(
 }
 
 fn draw_form(frame: &mut Frame, area: Rect, app: &App, kind: FormKind) {
-    let hint =
-        if matches!(kind, FormKind::Install) && matches!(app.status_key, StatusKey::Installing) {
-            app.lang.t().footer_install_wait
-        } else if matches!(kind, FormKind::Credentials) {
-            app.lang.t().credentials_hint
-        } else {
-            app.lang.t().form_hint
-        };
+    let hint = if matches!(kind, FormKind::Install)
+        && matches!(
+            app.status_key,
+            StatusKey::Installing | StatusKey::WaitingForPod
+        ) {
+        app.lang.t().footer_install_wait
+    } else if matches!(kind, FormKind::Credentials) {
+        app.lang.t().credentials_hint
+    } else {
+        app.lang.t().form_hint
+    };
     let mut lines = vec![Line::from(hint), Line::from("")];
     if let Some(info) = &app.credentials {
         lines.push(Line::from(format!(
@@ -1188,6 +1282,86 @@ mod tests {
         assert_eq!(scroll_report(0, KeyCode::End, 20), 20);
         assert_eq!(scroll_report(100, KeyCode::Up, 20), 19);
         assert_eq!(scroll_report(20, KeyCode::Home, 20), 0);
+    }
+
+    #[test]
+    fn successful_installation_returns_directly_to_menu() {
+        let mut app = app();
+        let mut pods = PodHandler::new();
+        app.begin_form();
+        finish_installation(
+            &mut app,
+            &mut pods,
+            "lesson1".into(),
+            Ok(vec!["lesson1-abc".into()]),
+        );
+        assert!(matches!(app.screen, Screen::Menu));
+        assert_eq!(app.status, Lang::Zh.t().status_installed);
+        assert_eq!(pods.pod_list, vec!["lesson1-abc"]);
+        assert!(app.form_values.is_empty());
+    }
+
+    #[test]
+    fn failed_installation_stays_visible_until_dismissed() {
+        let mut app = app();
+        let mut pods = PodHandler::new();
+        finish_installation(
+            &mut app,
+            &mut pods,
+            "lesson1".into(),
+            Err(ThumedError::PodStartupFailed {
+                release: "lesson1".into(),
+                detail: "lesson1-abc: CrashLoopBackOff".into(),
+            }),
+        );
+        let text = render(&app);
+        assert!(text.contains("启动失败"));
+        assert!(text.contains("helm uninstall lesson1"));
+        assert!(text.contains("CrashLoopBackOff"));
+        app.toggle_lang();
+        assert!(render(&app).contains("Pod startup failed"));
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 80, 24)),
+            },
+        )
+        .unwrap();
+        // No background recheck or deletion can be triggered by the result screen.
+        for key in [KeyCode::Char('r'), KeyCode::Char('y')] {
+            handle_key(&mut app, &mut terminal, &mut pods, key).unwrap();
+            assert!(matches!(app.screen, Screen::InstallFailed { .. }));
+        }
+        handle_key(&mut app, &mut terminal, &mut pods, KeyCode::Enter).unwrap();
+        assert!(matches!(app.screen, Screen::Menu));
+        assert_eq!(app.selected, 3);
+
+        app.lang = Lang::Zh;
+        finish_installation(
+            &mut app,
+            &mut pods,
+            "lesson1".into(),
+            Err(ThumedError::PodStartupTimeout {
+                seconds: 30,
+                detail: "lesson1-abc: Pending".into(),
+            }),
+        );
+        let text = render(&app);
+        assert!(text.contains("不代表 Pod 已失败"));
+        assert!(text.contains("Pending"));
+        assert!(matches!(app.screen, Screen::InstallFailed { .. }));
+        finish_installation(
+            &mut app,
+            &mut pods,
+            "lesson1".into(),
+            Err(ThumedError::CommandFailed {
+                cmd: "kubectl get pods".into(),
+                stderr: "connection refused".into(),
+            }),
+        );
+        let text = render(&app);
+        assert!(text.contains("connection refused"));
+        assert!(!text.contains("Pod 启动失败"));
     }
 
     #[test]
