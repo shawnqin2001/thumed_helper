@@ -13,7 +13,7 @@ pub enum Invalid {
     PodName,
     CpuValue,
     MemoryValue,
-    NoReleaseLabel,
+    NoReleaseName,
     ReleaseChanged,
 }
 
@@ -29,14 +29,6 @@ pub enum ThumedError {
         stderr: String,
     },
     PodNotFound(String),
-    PodStartupFailed {
-        release: String,
-        detail: String,
-    },
-    PodStartupTimeout {
-        seconds: u64,
-        detail: String,
-    },
     Invalid(Invalid),
 }
 
@@ -54,7 +46,7 @@ impl Invalid {
             Self::PodName => "Pod name must contain only lowercase letters and numbers.",
             Self::CpuValue => "CPU cores must be a whole number between 1 and 255.",
             Self::MemoryValue => "Memory GB must be a whole number between 1 and 255.",
-            Self::NoReleaseLabel => "Pod has no Helm release label.",
+            Self::NoReleaseName => "Helm release cannot be derived from the pod name.",
             Self::ReleaseChanged => "Pod Helm release changed; select the pod again.",
         }
     }
@@ -70,20 +62,6 @@ impl fmt::Display for ThumedError {
                 write!(f, "Command '{}' failed: {}", cmd, stderr.trim())
             }
             Self::PodNotFound(name) => write!(f, "Pod '{}' not found", name),
-            Self::PodStartupFailed { release, detail } => {
-                write!(
-                    f,
-                    "Pod startup failed for release '{}': {}",
-                    release, detail
-                )
-            }
-            Self::PodStartupTimeout { seconds, detail } => {
-                write!(
-                    f,
-                    "Pod Running was not confirmed within {} seconds: {}",
-                    seconds, detail
-                )
-            }
             Self::Invalid(kind) => write!(f, "{}", kind.as_str()),
         }
     }

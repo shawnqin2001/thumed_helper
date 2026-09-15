@@ -4,7 +4,6 @@ use crate::error::{Invalid, Result, ThumedError};
 use crate::utils::{command, run_cmd};
 use std::io::Write;
 use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct PodConfig {
@@ -123,151 +122,34 @@ fn parse_limit(value: &str, kind: Invalid) -> Result<Option<u8>> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum PodStartup {
-    Waiting(String),
-    Running(Vec<String>),
-    Failed(String),
-}
-
-/// Wait as part of creation, not in a background worker or the TUI event loop.
+/// Wait for chart deployment readiness. Chart pods lack Helm release labels,
+/// so Kubernetes deployment rollout is the reliable release-scoped check.
 pub fn wait_for_pod_running(release: &str) -> Result<Vec<String>> {
-    wait_for_running(
-        release,
-        Duration::from_secs(30),
-        Duration::from_secs(2),
-        || check_pod_startup(release),
-    )
-}
-
-fn wait_for_running(
-    release: &str,
-    timeout: Duration,
-    interval: Duration,
-    mut check: impl FnMut() -> Result<PodStartup>,
-) -> Result<Vec<String>> {
-    let started = Instant::now();
-    loop {
-        match check()? {
-            PodStartup::Running(names) => return Ok(names),
-            PodStartup::Failed(detail) => {
-                return Err(ThumedError::PodStartupFailed {
-                    release: release.to_string(),
-                    detail,
-                });
-            }
-            PodStartup::Waiting(detail) => {
-                let remaining = timeout.saturating_sub(started.elapsed());
-                if remaining.is_zero() {
-                    return Err(ThumedError::PodStartupTimeout {
-                        seconds: timeout.as_secs(),
-                        detail,
-                    });
-                }
-                std::thread::sleep(interval.min(remaining));
-            }
-        }
-    }
-}
-
-/// Inspect only pods belonging to the newly installed Helm release.
-/// JSONPath emits fixed columns; no human-readable kubectl table parsing.
-fn check_pod_startup(release: &str) -> Result<PodStartup> {
-    let selector = format!("app.kubernetes.io/instance={}", release);
-    let output = run_cmd(
+    let deployment = format!("deployment/{}-med", release);
+    run_cmd(
         "kubectl",
-        &[
-            "get",
-            "pods",
-            "--selector",
-            &selector,
-            "--request-timeout=5s",
-            "-o",
-            concat!(
-                "jsonpath={range .items[*]}",
-                "{.metadata.name}{\"\\t\"}{.status.phase}{\"\\t\"}",
-                "{.status.reason}{\"\\t\"}{.metadata.deletionTimestamp}{\"\\t\"}",
-                "{range .status.initContainerStatuses[*]}{.state.waiting.reason}{\",\"}{end}",
-                "{range .status.containerStatuses[*]}{.state.waiting.reason}{\",\"}{end}{\"\\t\"}",
-                "{range .status.initContainerStatuses[*]}",
-                "{.state.terminated.reason}{\":\"}{.state.terminated.exitCode}{\",\"}{end}",
-                "{range .status.containerStatuses[*]}",
-                "{.state.terminated.reason}{\":\"}{.state.terminated.exitCode}{\",\"}{end}",
-                "{\"\\n\"}{end}",
-            ),
-        ],
+        &["rollout", "status", &deployment, "--timeout=30s"],
     )?;
-    parse_pod_startup(&output)
+    let output = run_cmd("kubectl", &["get", "pods", "-o", "name"])?;
+    Ok(release_pod_names(&output, release))
 }
 
-fn parse_pod_startup(output: &str) -> Result<PodStartup> {
-    let mut summary = Vec::new();
-    let mut names = Vec::new();
-    let mut failed = false;
-    let mut all_running = true;
-    for row in output.lines().filter(|row| !row.trim().is_empty()) {
-        let fields: Vec<_> = row.split('\t').collect();
-        if fields.len() != 6 || fields[0].is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Unexpected kubectl pod status output",
-            )
-            .into());
-        }
-        let (name, phase, reason, deleting) = (fields[0], fields[1], fields[2], fields[3]);
-        let waiting: Vec<_> = fields[4].split(',').filter(|s| !s.is_empty()).collect();
-        let terminated: Vec<_> = fields[5]
-            .split(',')
-            .filter(|s| !s.is_empty() && *s != ":")
-            .collect();
-        // Phase may still be Running while a container is in CrashLoopBackOff.
-        failed |= matches!(phase, "Failed" | "Succeeded")
-            || waiting.iter().any(|reason| {
-                matches!(
-                    *reason,
-                    "CrashLoopBackOff"
-                        | "ErrImagePull"
-                        | "ImagePullBackOff"
-                        | "InvalidImageName"
-                        | "ErrImageNeverPull"
-                        | "CreateContainerConfigError"
-                        | "CreateContainerError"
-                        | "RunContainerError"
-                        | "StartError"
-                )
-            })
-            || terminated.iter().any(|state| {
-                state
-                    .rsplit_once(':')
-                    .and_then(|(_, code)| code.parse::<i32>().ok())
-                    .is_some_and(|code| code != 0)
-            });
-        all_running &= phase == "Running" && waiting.is_empty() && deleting.is_empty();
-        let details = [
-            reason.to_string(),
-            waiting.join(", "),
-            terminated.join(", "),
-        ]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" / ");
-        names.push(name.to_string());
-        summary.push(
-            format!("{}: {} {}", name, phase, details)
-                .trim()
-                .to_string(),
-        );
-    }
-    let running = !summary.is_empty() && all_running;
-    let summary = summary.join("\n");
-    Ok(if failed {
-        PodStartup::Failed(summary)
-    } else if running {
-        PodStartup::Running(names)
-    } else {
-        PodStartup::Waiting(summary)
-    })
+fn release_pod_names(output: &str, release: &str) -> Vec<String> {
+    let prefix = format!("{}-med-", release);
+    output
+        .lines()
+        .filter_map(|name| name.strip_prefix("pod/"))
+        .filter(|name| name.starts_with(&prefix))
+        .map(str::to_string)
+        .collect()
+}
+
+fn release_name_from_pod(pod_name: &str) -> Result<&str> {
+    pod_name
+        .split_once('-')
+        .map(|(release, _)| release)
+        .filter(|release| !release.is_empty())
+        .ok_or(Invalid::NoReleaseName.into())
 }
 
 #[derive(Default)]
@@ -331,20 +213,7 @@ impl PodHandler {
 
     pub fn release_for_pod(&self, pod_name: &str) -> Result<String> {
         self.ensure_known(pod_name)?;
-        let release = run_cmd(
-            "kubectl",
-            &[
-                "get",
-                "pod",
-                pod_name,
-                "-o",
-                "jsonpath={.metadata.labels.app\\.kubernetes\\.io/instance}",
-            ],
-        )?;
-        let release = release.trim();
-        if release.is_empty() {
-            return Err(Invalid::NoReleaseLabel.into());
-        }
+        let release = release_name_from_pod(pod_name)?;
         run_cmd("helm", &["status", release])?;
         Ok(release.to_string())
     }
@@ -353,7 +222,18 @@ impl PodHandler {
         if self.release_for_pod(pod_name)? != release {
             return Err(Invalid::ReleaseChanged.into());
         }
-        run_cmd("helm", &["uninstall", release])?;
+        run_cmd(
+            "helm",
+            &[
+                "uninstall",
+                release,
+                "--cascade",
+                "foreground",
+                "--wait",
+                "--timeout",
+                "5m",
+            ],
+        )?;
         self.refresh()
     }
 }
@@ -361,95 +241,6 @@ impl PodHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn synchronous_wait_returns_running_failure_timeout_or_query_error() {
-        let mut states = [
-            PodStartup::Waiting("Pending".into()),
-            PodStartup::Running(vec!["lesson1-abc".into()]),
-        ]
-        .into_iter();
-        let names = wait_for_running("lesson1", Duration::from_secs(1), Duration::ZERO, || {
-            Ok(states.next().expect("must stop after Running"))
-        })
-        .unwrap();
-        assert_eq!(names, vec!["lesson1-abc"]);
-        assert!(states.next().is_none());
-
-        let failed = wait_for_running("lesson1", Duration::from_secs(1), Duration::ZERO, || {
-            Ok(PodStartup::Failed("CrashLoopBackOff".into()))
-        });
-        assert!(
-            matches!(failed, Err(ThumedError::PodStartupFailed { release, detail })
-            if release == "lesson1" && detail == "CrashLoopBackOff")
-        );
-        let timeout = wait_for_running("lesson1", Duration::ZERO, Duration::ZERO, || {
-            Ok(PodStartup::Waiting("Pending".into()))
-        });
-        assert!(
-            matches!(timeout, Err(ThumedError::PodStartupTimeout { seconds: 0, detail }) if detail == "Pending")
-        );
-        let error = wait_for_running("lesson1", Duration::ZERO, Duration::ZERO, || {
-            Err(ThumedError::MissingTool("kubectl".into()))
-        });
-        assert!(matches!(error, Err(ThumedError::MissingTool(_))));
-    }
-
-    #[test]
-    fn startup_checks_phase_and_container_errors() {
-        fn row(phase: &str, reason: &str, waiting: &str, terminated: &str) -> String {
-            format!(
-                "lesson1-abc\t{}\t{}\t\t{}\t{}\n",
-                phase, reason, waiting, terminated
-            )
-        }
-        assert_eq!(
-            parse_pod_startup("").unwrap(),
-            PodStartup::Waiting(String::new())
-        );
-        let running = row("Running", "", ",,", "Completed:0,:,");
-        assert_eq!(
-            parse_pod_startup(&running).unwrap(),
-            PodStartup::Running(vec!["lesson1-abc".to_string()])
-        );
-        assert_eq!(
-            parse_pod_startup(&running.replace('\n', "\r\n")).unwrap(),
-            parse_pod_startup(&running).unwrap()
-        );
-        let pending = row("Pending", "", "ContainerCreating,", ":,");
-        for output in [&pending, &format!("{}{}", running, pending)] {
-            assert!(matches!(
-                parse_pod_startup(output),
-                Ok(PodStartup::Waiting(_))
-            ));
-        }
-        for (phase, reason, waiting, terminated, expected) in [
-            ("Failed", "Evicted", "", "", "Evicted"),
-            ("Running", "", "CrashLoopBackOff,", ":,", "CrashLoopBackOff"),
-            ("Pending", "", "ImagePullBackOff,", "", "ImagePullBackOff"),
-            ("Pending", "", "ErrImagePull,", "", "ErrImagePull"),
-            (
-                "Pending",
-                "",
-                "CreateContainerConfigError,",
-                "",
-                "CreateContainerConfigError",
-            ),
-            ("Running", "", "", "OOMKilled:137,", "OOMKilled"),
-            ("Pending", "", "", "Error:1,", "Error:1"),
-            ("Succeeded", "", "", "Completed:0,", "Succeeded"),
-        ] {
-            let output = format!("{}{}", running, row(phase, reason, waiting, terminated));
-            assert!(
-                matches!(parse_pod_startup(&output), Ok(PodStartup::Failed(detail)) if detail.contains(expected))
-            );
-        }
-        assert!(matches!(
-            parse_pod_startup("lesson1-abc\tRunning\t\t2026-01-01T00:00:00Z\t,\t:,\n"),
-            Ok(PodStartup::Waiting(_))
-        ));
-        assert!(parse_pod_startup("malformed output").is_err());
-    }
 
     #[test]
     fn pod_config_validates_input() {
@@ -469,19 +260,44 @@ mod tests {
     }
 
     #[test]
-    fn render_values_yaml_uses_values_and_defaults() {
+    fn render_values_yaml_uses_resource_defaults() {
         let user = UserInfo::from_username("alice").unwrap();
-        let yaml = PodConfig::from_values("pod01", "4", "")
+        let yaml = PodConfig::from_values("pod01", "", "")
             .unwrap()
             .render_values_yaml(&user);
 
         assert!(yaml.contains("containerName: \"pod01\""));
         assert!(yaml.contains(&format!(
-            "resources:\n  cpu: \"4\"\n  memory: \"{}\"",
+            "resources:\n  cpu: \"{}\"\n  memory: \"{}\"",
+            constants::DEFAULT_CPU_CORES,
             constants::DEFAULT_MEMORY_GB
         )));
         assert!(yaml.contains("username: \"alice\""));
         assert!(yaml.contains("password: \"Test1234\""));
+    }
+
+    #[test]
+    fn release_pod_names_uses_chart_resource_names_without_labels() {
+        let output = "pod/lesson1-med-abc-123\npod/other-med-def-456\nservice/lesson1-svc\n";
+
+        assert_eq!(
+            release_pod_names(output, "lesson1"),
+            vec!["lesson1-med-abc-123"]
+        );
+    }
+
+    #[test]
+    fn release_name_is_first_pod_name_segment() {
+        assert_eq!(
+            release_name_from_pod("ql1-med-75b8d8f69f-pwtjd").unwrap(),
+            "ql1"
+        );
+        for invalid in ["missingseparator", "-med-abc"] {
+            assert!(matches!(
+                release_name_from_pod(invalid),
+                Err(ThumedError::Invalid(Invalid::NoReleaseName))
+            ));
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ pub const APP_DIR: &str = "thumed_helper";
 pub const APP_NAME: &str = "THU-Med Cluster Helper";
 pub const LECTURE_PASSWORD: &str = "Test1234";
 
-pub const DEFAULT_CPU_CORES: u8 = 16;
+pub const DEFAULT_CPU_CORES: u8 = 8;
 pub const DEFAULT_MEMORY_GB: u8 = 50;
 
 pub const HELM_REPO_URL: &str = "http://166.111.153.65:7001";

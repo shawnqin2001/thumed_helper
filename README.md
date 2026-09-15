@@ -24,10 +24,21 @@ Menu items: install pod, login to pod, forward port 8787
 (stays inside the UI, `Esc` stops it), uninstall pod, update user information,
 check environment (last).
 
+创建 Pod 时，CPU 和内存留空分别使用 `8` CPU 和 `50Gi`。程序通过对应
+Deployment rollout 判断创建完成，再返回菜单。
+
+When creating a pod, blank CPU and memory fields default to `8` CPU and `50Gi`.
+The app returns to the menu after the release Deployment rollout completes.
+
+确认卸载后，程序等待 Helm 完成资源删除，刷新 Pod 列表后再返回菜单。
+After confirmation, the app waits for Helm resource deletion and refreshes the
+pod list before returning to the menu.
+
 ### 首次使用 / First launch
 
-首次启动只提示 `config` 文件的存放位置，不再要求输入账号密码或手动安装工具。
-检测到文件后自动继续：复用可用的 kubectl/Helm，安装缺少的工具，校验当前配置
+首次启动会咨询登录密码，输入框预填默认值 `Test1234`。请确认或修改密码，
+并将 `config` 文件放到提示位置。按 `Enter` 后程序自动继续：复用可用的
+kubectl/Helm，安装缺少的工具，校验当前配置
 引用的证书和密钥，检测集群访问并添加/更新 Helm 仓库。初始化过程中会逐步显示
 正在检查、获取版本、下载安装包/校验文件、校验 SHA-256、解压、验证可执行文件、
 安装及更新仓库等操作，并显示已完成项目和待检查项目。
@@ -56,11 +67,12 @@ Helm 3，使用 HTTPS、SHA-256 校验及运行验证后安装到应用配置目
 此操作只更改本地应用登录信息，不更改 kubeconfig 身份或集群中的实际密码。
 
 
-Place the administrator-provided config at the displayed path. Setup automatically
-installs missing tools and shows progress before each operation. Completed checks
-remain in a scrollable report, including plaintext lecture username/password.
+On first launch, confirm or replace the prefilled `Test1234` login password and
+place the administrator-provided config at the displayed path. Press `Enter` to
+set up missing tools and continue environment checks. Completed checks remain
+in a scrollable report, including the plaintext lecture username and password.
 Use Update user information (or `u` in the report) to save a context-bound override.
-Defaults remain the active config username and `Test1234`. Private keys and tokens
-are never selected for display; local credential edits do not change cluster passwords.
+The active config user remains the default username. Private keys and tokens are
+never selected for display; local credential edits do not change cluster passwords.
 
 

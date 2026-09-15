@@ -28,7 +28,19 @@ pub struct UserInfo {
 
 impl UserInfo {
     pub fn load() -> Result<Self> {
-        Self::from_kubeconfig()?.load_override(&config_dir())
+        Self::load_with_password(None)
+    }
+
+    fn load_with_password(password: Option<&str>) -> Result<Self> {
+        let mut info = Self::from_kubeconfig()?;
+        let Some(password) = password else {
+            return info.load_override(&config_dir());
+        };
+        info.password = password.to_string();
+        info.validate_credentials()?;
+        info.save(&config_dir())?;
+        info.customized = true;
+        Ok(info)
     }
 
     pub fn from_kubeconfig() -> Result<Self> {
@@ -216,6 +228,7 @@ pub fn record_initialization(config_dir: &Path, report: &[CheckResult]) -> Resul
 /// remain in the report; dependent checks are explicitly marked as skipped.
 pub fn check_env(
     mut progress: impl FnMut(&[CheckResult], CheckItem, SetupStep) -> Result<()>,
+    startup_password: Option<&str>,
 ) -> Result<Vec<CheckResult>> {
     let mut report = Vec::new();
     progress(&report, CheckItem::Kubeconfig, SetupStep::Check)?;
@@ -237,7 +250,7 @@ pub fn check_env(
 
     progress(&report, CheckItem::Credentials, SetupStep::Check)?;
     let credentials = if kubectl_ready {
-        UserInfo::load()
+        UserInfo::load_with_password(startup_password)
     } else {
         Err(Invalid::SetupPrerequisite.into())
     };

@@ -84,12 +84,11 @@ enum StatusKey {
     WaitingForPod,
     NoPods,
     LoginEnded,
-    ForwardStarted,
     ForwardStopped,
     Installing,
     Installed,
     UserSaved,
-    UninstallCancelled,
+    Uninstalling,
     Checking,
 }
 
@@ -104,12 +103,11 @@ impl StatusKey {
             Self::WaitingForPod => t.pod_waiting,
             Self::NoPods => t.status_no_pods,
             Self::LoginEnded => t.status_login_ended,
-            Self::ForwardStarted => t.status_forward_started,
             Self::ForwardStopped => t.status_forward_stopped,
             Self::Installing => t.status_installing,
             Self::Installed => t.status_installed,
             Self::UserSaved => t.status_user_saved,
-            Self::UninstallCancelled => t.status_uninstall_cancelled,
+            Self::Uninstalling => t.status_uninstalling,
             Self::Checking => t.check_running,
         })
     }
@@ -123,6 +121,7 @@ struct App {
     form_selected: usize,
     form_values: Vec<String>,
     credentials: Option<UserInfo>,
+    startup_password: Option<String>,
     report_scroll: u16,
     screen: Screen,
     status: String,
@@ -146,6 +145,7 @@ impl App {
             pod_number: String::new(),
             form_selected: 0,
             form_values: Vec::new(),
+            startup_password: (!initialized).then(|| constants::LECTURE_PASSWORD.to_string()),
             credentials: None,
             report_scroll: 0,
             screen: if initialized {
@@ -188,6 +188,7 @@ impl App {
         self.form_selected = 0;
         self.credentials = None;
         self.form_values = vec![String::new(); self.lang.t().install_labels.len()];
+        self.set_status(StatusKey::None);
         self.screen = Screen::Form(FormKind::Install);
     }
 
@@ -197,6 +198,7 @@ impl App {
         self.form_selected = 0;
         self.form_values = vec![info.user.clone(), info.password.clone()];
         self.credentials = Some(info);
+        self.set_status(StatusKey::None);
         self.screen = Screen::Form(FormKind::Credentials);
         Ok(())
     }
@@ -245,6 +247,8 @@ pub fn run(config_dir: &Path, pod_handler: &mut PodHandler) -> Result<()> {
     terminal.hide_cursor()?;
     let mut app = App::new(config_dir.to_path_buf());
     if !environment::kubeconfig_path().is_file() {
+        app.startup_password
+            .get_or_insert_with(|| constants::LECTURE_PASSWORD.to_string());
         app.screen = Screen::Initialize;
     }
 
@@ -254,10 +258,6 @@ pub fn run(config_dir: &Path, pod_handler: &mut PodHandler) -> Result<()> {
     }
 
     let result = loop {
-        if matches!(app.screen, Screen::Initialize) && environment::kubeconfig_path().is_file() {
-            // Once config is supplied, setup continues without another prompt.
-            check_environment(&mut app, &mut terminal, pod_handler)?;
-        }
         poll_forward(&mut app);
         terminal.draw(|frame| draw_ui(frame, &app, pod_handler))?;
 
@@ -324,7 +324,31 @@ fn handle_key(
     match app.screen {
         Screen::Initialize => {
             match key {
-                KeyCode::Enter => check_environment(app, terminal, pod_handler)?,
+                KeyCode::Enter => {
+                    let password = app
+                        .startup_password
+                        .as_deref()
+                        .ok_or(Invalid::SavedCredentials)?;
+                    if password.trim().is_empty() || password.chars().any(char::is_control) {
+                        return Err(Invalid::SavedCredentials.into());
+                    }
+                    check_environment(app, terminal, pod_handler)?;
+                }
+                KeyCode::Backspace => {
+                    if let Some(password) = &mut app.startup_password {
+                        password.pop();
+                    }
+                }
+                KeyCode::Delete => {
+                    if let Some(password) = &mut app.startup_password {
+                        password.clear();
+                    }
+                }
+                KeyCode::Char(character) => {
+                    if let Some(password) = &mut app.startup_password {
+                        password.push(character);
+                    }
+                }
                 KeyCode::Esc => {
                     app.selected = MENU_COUNT - 1;
                     app.screen = Screen::Menu;
@@ -364,7 +388,9 @@ fn handle_key(
         }
         Screen::PodPicker(action) => handle_pod_picker_key(app, terminal, pod_handler, action, key),
         Screen::Form(kind) => handle_form_key(app, terminal, pod_handler, kind, key),
-        Screen::ConfirmUninstall { .. } => handle_uninstall_confirmation(app, pod_handler, key),
+        Screen::ConfirmUninstall { .. } => {
+            handle_uninstall_confirmation(app, terminal, pod_handler, key)
+        }
         Screen::Forwarding { .. } => {
             if matches!(key, KeyCode::Esc | KeyCode::Char('q')) {
                 stop_forward(app);
@@ -406,13 +432,23 @@ fn check_environment(
 ) -> Result<()> {
     app.set_status(StatusKey::Checking);
     app.report_scroll = 0;
-    let report = environment::check_env(|report, item, step| {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            draw_report(frame, area, app, report, Some((item, step)));
-        })?;
-        Ok(())
-    })?;
+    let initial_password = app.startup_password.clone();
+    let report = environment::check_env(
+        |report, item, step| {
+            terminal.draw(|frame| {
+                let area = frame.area();
+                draw_report(frame, area, app, report, Some((item, step)));
+            })?;
+            Ok(())
+        },
+        initial_password.as_deref(),
+    )?;
+    if report
+        .iter()
+        .any(|(item, result)| *item == CheckItem::Credentials && result.is_ok())
+    {
+        app.startup_password = None;
+    }
     let initialized = environment::record_initialization(&app.config_dir, &report);
     // Keep successful reports visible too, until the user explicitly leaves.
     app.screen = Screen::Report(report);
@@ -454,11 +490,7 @@ fn finish_installation(
             app.set_status(StatusKey::Installed);
         }
         Err(error) => {
-            app.selected = if matches!(error, ThumedError::PodStartupFailed { .. }) {
-                3
-            } else {
-                0
-            };
+            app.selected = 0;
             app.set_error(&error);
             app.screen = Screen::InstallFailed { release, error };
         }
@@ -470,6 +502,7 @@ fn open_pod_picker(app: &mut App, pod_handler: &mut PodHandler, action: PodActio
     if pod_handler.pod_list.is_empty() {
         app.set_status(StatusKey::NoPods);
     } else {
+        app.set_status(StatusKey::None);
         app.pod_selected = 0;
         app.pod_number.clear();
         app.screen = Screen::PodPicker(action);
@@ -535,10 +568,10 @@ fn handle_pod_picker_key(
                 PodAction::Forward => {
                     let child = pod_handler.start_forward(&pod_name)?;
                     app.screen = Screen::Forwarding { pod_name, child };
-                    app.set_status(StatusKey::ForwardStarted);
                 }
                 PodAction::Uninstall => {
                     let release = pod_handler.release_for_pod(&pod_name)?;
+                    app.set_status(StatusKey::None);
                     app.screen = Screen::ConfirmUninstall { pod_name, release };
                 }
             }
@@ -578,6 +611,7 @@ fn handle_form_key(
                 info.user = app.form_values[0].trim().to_string();
                 info.password = app.form_values[1].clone();
                 info.save(&app.config_dir)?;
+                app.startup_password = None;
                 app.credentials = None;
                 app.form_values.clear();
                 app.screen = Screen::Menu;
@@ -627,6 +661,7 @@ fn submit_form(
 
 fn handle_uninstall_confirmation(
     app: &mut App,
+    terminal: &mut AppTerminal,
     pod_handler: &mut PodHandler,
     key: KeyCode,
 ) -> Result<()> {
@@ -636,13 +671,17 @@ fn handle_uninstall_confirmation(
     match key {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let (pod_name, release) = (pod_name.clone(), release.clone());
+            app.set_status(StatusKey::Uninstalling);
+            terminal.draw(|frame| draw_ui(frame, app, pod_handler))?;
             pod_handler.uninstall_pod_release(&pod_name, &release)?;
+            while event::poll(Duration::ZERO)? {
+                let _ = event::read()?;
+            }
             let text = fill(app.lang.t().status_uninstalled, &[&pod_name, &release]);
             app.set_status_text(text);
             app.screen = Screen::Menu;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.set_status(StatusKey::UninstallCancelled);
             app.screen = Screen::Menu;
         }
         _ => {}
@@ -707,6 +746,9 @@ fn draw_ui(frame: &mut Frame, app: &App, pod_handler: &PodHandler) {
         Screen::Report(_) => t.footer_back,
         Screen::PodPicker(_) => t.footer_picker,
         Screen::Form(_) => t.footer_form,
+        Screen::ConfirmUninstall { .. } if matches!(app.status_key, StatusKey::Uninstalling) => {
+            t.footer_uninstall_wait
+        }
         Screen::ConfirmUninstall { .. } => t.footer_confirm,
         Screen::Forwarding { .. } => t.footer_forward,
     };
@@ -727,6 +769,12 @@ fn draw_initialize(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(t.initialize_hint),
             Line::from(""),
             Line::from(environment::kubeconfig_path().display().to_string()),
+            Line::from(""),
+            Line::from(format!(
+                "{}: {}",
+                t.initialize_password,
+                app.startup_password.as_deref().unwrap_or_default()
+            )),
         ]
     };
     frame.render_widget(
@@ -986,13 +1034,17 @@ fn draw_form(frame: &mut Frame, area: Rect, app: &App, kind: FormKind) {
             app.status_key,
             StatusKey::Installing | StatusKey::WaitingForPod
         ) {
-        app.lang.t().footer_install_wait
+        Some(app.lang.t().footer_install_wait)
     } else if matches!(kind, FormKind::Credentials) {
-        app.lang.t().credentials_hint
+        Some(app.lang.t().credentials_hint)
     } else {
-        app.lang.t().form_hint
+        None
     };
-    let mut lines = vec![Line::from(hint), Line::from("")];
+    let mut lines = Vec::new();
+    if let Some(hint) = hint {
+        lines.push(Line::from(hint));
+        lines.push(Line::from(""));
+    }
     if let Some(info) = &app.credentials {
         lines.push(Line::from(format!(
             "{}: {}",
@@ -1047,9 +1099,6 @@ fn draw_forwarding(frame: &mut Frame, area: Rect, app: &App, pod_name: &str) {
             )),
             Line::from(""),
             Line::from(fill(t.forward_url, &[&port])),
-            Line::from(t.forward_stop),
-            Line::from(""),
-            status_line(app),
         ])
         .block(
             Block::default()
@@ -1069,20 +1118,21 @@ fn draw_uninstall_confirmation(
     release: &str,
 ) {
     let t = app.lang.t();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            t.uninstall_warning,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(fill(t.uninstall_pod, &[pod_name])),
+        Line::from(fill(t.uninstall_release, &[release])),
+    ];
+    if matches!(app.status_key, StatusKey::Uninstalling) {
+        lines.push(Line::from(""));
+        lines.push(status_line(app));
+    }
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                t.uninstall_warning,
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(fill(t.uninstall_pod, &[pod_name])),
-            Line::from(fill(t.uninstall_release, &[release])),
-            Line::from(""),
-            Line::from(t.uninstall_continue),
-            status_line(app),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .title(t.panel_confirm)
                 .borders(Borders::ALL),
@@ -1099,6 +1149,9 @@ fn highlight() -> Style {
 }
 
 fn status_line(app: &App) -> Line<'static> {
+    if app.status.is_empty() {
+        return Line::default();
+    }
     Line::from(vec![
         Span::styled(
             app.lang.t().status_label,
@@ -1169,10 +1222,8 @@ mod tests {
         assert!(matches!(app.screen, Screen::Initialize));
         assert_eq!(app.lang, Lang::Zh);
         let text = render(&app);
-        assert!(text.contains("config 文件"));
-        assert!(!text.contains("按 u"));
-        assert!(!text.contains("Test1234"));
-        assert!(!text.contains("安装 kubectl"));
+        assert!(text.contains(Lang::Zh.t().initialize_hint));
+        assert!(text.contains("Test1234"));
         assert!(text.contains(&environment::kubeconfig_path().display().to_string()));
         let report = CheckItem::ALL
             .into_iter()
@@ -1181,6 +1232,51 @@ mod tests {
         environment::record_initialization(&dir, &report).unwrap();
         assert!(matches!(App::new(dir.clone()).screen, Screen::Menu));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn first_launch_password_can_be_edited() {
+        let mut app = app();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 80, 24)),
+            },
+        )
+        .unwrap();
+        handle_key(
+            &mut app,
+            &mut terminal,
+            &mut PodHandler::new(),
+            KeyCode::Char('x'),
+        )
+        .unwrap();
+        assert_eq!(app.startup_password.as_deref(), Some("Test1234x"));
+        handle_key(
+            &mut app,
+            &mut terminal,
+            &mut PodHandler::new(),
+            KeyCode::Backspace,
+        )
+        .unwrap();
+        assert_eq!(app.startup_password.as_deref(), Some("Test1234"));
+        handle_key(
+            &mut app,
+            &mut terminal,
+            &mut PodHandler::new(),
+            KeyCode::Delete,
+        )
+        .unwrap();
+        assert_eq!(app.startup_password.as_deref(), Some(""));
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut terminal,
+                &mut PodHandler::new(),
+                KeyCode::Enter
+            ),
+            Err(ThumedError::Invalid(Invalid::SavedCredentials))
+        ));
     }
 
     #[test]
@@ -1201,6 +1297,9 @@ mod tests {
         handle_key(&mut app, &mut terminal, &mut pods, KeyCode::Enter).unwrap();
         assert!(matches!(app.screen, Screen::Form(FormKind::Install)));
         assert_eq!(app.form_values.len(), 3);
+        let text = render(&app);
+        assert!(text.contains("CPU 核数（留空默认为 8）"));
+        assert!(text.contains("内存（留空默认为 50Gi）"));
         assert_eq!(Lang::Zh.t().menu_labels[4], "更新用户信息");
         assert_eq!(Lang::Zh.t().menu_labels[MENU_COUNT - 1], "检查环境");
         assert_eq!(
@@ -1224,7 +1323,7 @@ mod tests {
         assert!(text.contains("用户名: student01"));
         assert!(text.contains("密码: Test1234"));
         assert!(text.contains("https://fixture.invalid"));
-        assert!(text.contains("当前 context: lesson"));
+        assert!(text.contains(&format!("{}: lesson", Lang::Zh.t().context_label)));
         app.toggle_lang();
         assert!(render(&app).contains("Password: Test1234"));
 
@@ -1275,7 +1374,7 @@ mod tests {
             .unwrap();
         let text = screen_text(&terminal);
         assert!(text.contains("[2/6] kubectl — 下载安装包"));
-        assert!(text.contains("等待检查"));
+        assert!(text.contains(Lang::Zh.t().check_pending));
         assert_eq!(scroll_report(0, KeyCode::Up, 20), 0);
         assert_eq!(scroll_report(0, KeyCode::PageDown, 20), 10);
         assert_eq!(scroll_report(19, KeyCode::PageDown, 20), 20);
@@ -1309,17 +1408,11 @@ mod tests {
             &mut app,
             &mut pods,
             "lesson1".into(),
-            Err(ThumedError::PodStartupFailed {
-                release: "lesson1".into(),
-                detail: "lesson1-abc: CrashLoopBackOff".into(),
+            Err(ThumedError::CommandFailed {
+                cmd: "kubectl rollout status deployment/lesson1-med --timeout=30s".into(),
+                stderr: "timed out waiting for the condition".into(),
             }),
         );
-        let text = render(&app);
-        assert!(text.contains("启动失败"));
-        assert!(text.contains("helm uninstall lesson1"));
-        assert!(text.contains("CrashLoopBackOff"));
-        app.toggle_lang();
-        assert!(render(&app).contains("Pod startup failed"));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(io::stdout()),
             ratatui::TerminalOptions {
@@ -1334,34 +1427,21 @@ mod tests {
         }
         handle_key(&mut app, &mut terminal, &mut pods, KeyCode::Enter).unwrap();
         assert!(matches!(app.screen, Screen::Menu));
-        assert_eq!(app.selected, 3);
+        assert_eq!(app.selected, 0);
+    }
 
-        app.lang = Lang::Zh;
-        finish_installation(
-            &mut app,
-            &mut pods,
-            "lesson1".into(),
-            Err(ThumedError::PodStartupTimeout {
-                seconds: 30,
-                detail: "lesson1-abc: Pending".into(),
-            }),
-        );
+    #[test]
+    fn uninstall_wait_status_is_visible_until_completion() {
+        let mut app = app();
+        app.screen = Screen::ConfirmUninstall {
+            pod_name: "ql1-med-abc".into(),
+            release: "ql1".into(),
+        };
+        app.set_status(StatusKey::Uninstalling);
+
         let text = render(&app);
-        assert!(text.contains("不代表 Pod 已失败"));
-        assert!(text.contains("Pending"));
-        assert!(matches!(app.screen, Screen::InstallFailed { .. }));
-        finish_installation(
-            &mut app,
-            &mut pods,
-            "lesson1".into(),
-            Err(ThumedError::CommandFailed {
-                cmd: "kubectl get pods".into(),
-                stderr: "connection refused".into(),
-            }),
-        );
-        let text = render(&app);
-        assert!(text.contains("connection refused"));
-        assert!(!text.contains("Pod 启动失败"));
+        assert!(text.contains("卸载中"));
+        assert!(!text.contains("y 确认"));
     }
 
     #[test]
@@ -1375,9 +1455,17 @@ mod tests {
     }
 
     #[test]
-    fn menu_labels_cover_every_menu_entry() {
+    fn menu_text_covers_every_entry_and_shows_selected_detail() {
         assert_eq!(Lang::Zh.t().menu_labels.len(), MENU_COUNT);
+        assert_eq!(Lang::En.t().menu_labels.len(), MENU_COUNT);
+        assert_eq!(Lang::Zh.t().menu_details.len(), MENU_COUNT);
         assert_eq!(Lang::En.t().menu_details.len(), MENU_COUNT);
+
+        let mut app = app();
+        app.screen = Screen::Menu;
+        assert!(render(&app).contains(Lang::Zh.t().menu_details[0]));
+        app.selected = 4;
+        assert!(render(&app).contains(Lang::Zh.t().menu_details[4]));
     }
 
     #[test]
